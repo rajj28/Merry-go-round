@@ -1,0 +1,428 @@
+{
+  "type": "home",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "3 people are blocked on you",
+        "emoji": true
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Scanned 8 channels \u00b7 14 loops tracked \u00b7 updated <!date^1736121600^{date_short_pretty} at {time}|2025-01-06>"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "Blocked on you",
+        "emoji": true
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "quick_nudge",
+      "elements": [
+        {
+          "type": "static_select",
+          "action_id": "app_home_quick_nudge",
+          "placeholder": {
+            "type": "plain_text",
+            "text": "Nudge someone who's waiting\u2026",
+            "emoji": true
+          },
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Alice Nguyen \u2014 Alice is waiting on your review of the onboarding design do\u2026",
+                "emoji": true
+              },
+              "value": "OBL_B1"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Bob Martinez \u2014 Bob is blocked on you merging the widgets PR.",
+                "emoji": true
+              },
+              "value": "OBL_B2"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Carol Davis \u2014 Carol needs your sign-off on the Q3 launch checklist.",
+                "emoji": true
+              },
+              "value": "OBL_B3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "carousel",
+      "block_id": "blocked_carousel",
+      "elements": [
+        {
+          "type": "card",
+          "icon": {
+            "type": "image",
+            "image_url": "https://i.pravatar.cc/150?img=47",
+            "alt_text": "U_ALICE"
+          },
+          "title": {
+            "type": "mrkdwn",
+            "text": "Alice Nguyen"
+          },
+          "subtitle": {
+            "type": "mrkdwn",
+            "text": "*3d overdue* \u00b7 in <#C_DESIGN>"
+          },
+          "body": {
+            "type": "mrkdwn",
+            "text": "Alice is waiting on your review of the onboarding design doc."
+          },
+          "actions": [
+            {
+              "type": "button",
+              "action_id": "app_home_nudge",
+              "text": {
+                "type": "plain_text",
+                "text": "Nudge",
+                "emoji": true
+              },
+              "value": "OBL_B1",
+              "style": "primary"
+            },
+            {
+              "type": "button",
+              "action_id": "app_home_snooze",
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "OBL_B1"
+            },
+            {
+              "type": "button",
+              "action_id": "app_home_dismiss",
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "OBL_B1",
+              "style": "danger"
+            }
+          ]
+        },
+        {
+          "type": "card",
+          "icon": {
+            "type": "image",
+            "image_url": "https://i.pravatar.cc/150?img=12",
+            "alt_text": "U_BOB"
+          },
+          "title": {
+            "type": "mrkdwn",
+            "text": "Bob Martinez"
+          },
+          "subtitle": {
+            "type": "mrkdwn",
+            "text": "2d \u00b7 in <#C_ENG_BACKEND>"
+          },
+          "body": {
+            "type": "mrkdwn",
+            "text": "Bob is blocked on you merging the widgets PR."
+          },
+          "actions": [
+            {
+              "type": "button",
+              "action_id": "app_home_nudge",
+              "text": {
+                "type": "plain_text",
+                "text": "Nudge",
+                "emoji": true
+              },
+              "value": "OBL_B2",
+              "style": "primary"
+            },
+            {
+              "type": "button",
+              "action_id": "app_home_snooze",
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "OBL_B2"
+            },
+            {
+              "type": "button",
+              "action_id": "app_home_dismiss",
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "OBL_B2",
+              "style": "danger"
+            }
+          ]
+        },
+        {
+          "type": "card",
+          "icon": {
+            "type": "image",
+            "image_url": "https://i.pravatar.cc/150?img=45",
+            "alt_text": "U_CAROL"
+          },
+          "title": {
+            "type": "mrkdwn",
+            "text": "Carol Davis"
+          },
+          "subtitle": {
+            "type": "mrkdwn",
+            "text": "1d \u00b7 in <#C_LAUNCH>"
+          },
+          "body": {
+            "type": "mrkdwn",
+            "text": "Carol needs your sign-off on the Q3 launch checklist."
+          },
+          "actions": [
+            {
+              "type": "button",
+              "action_id": "app_home_nudge",
+              "text": {
+                "type": "plain_text",
+                "text": "Nudge",
+                "emoji": true
+              },
+              "value": "OBL_B3",
+              "style": "primary"
+            },
+            {
+              "type": "button",
+              "action_id": "app_home_snooze",
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "OBL_B3"
+            },
+            {
+              "type": "button",
+              "action_id": "app_home_dismiss",
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "OBL_B3",
+              "style": "danger"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Waiting on others*  \u00b7  6"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=13",
+          "alt_text": "U_GREG"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Greg Park* \u2014 You are waiting on Greg for the frontend bug-fix estimate. \u00b7 *4d overdue* \u00b7 in <#C_ENG_FRONTEND>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=31",
+          "alt_text": "U_DANA"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Dana Cole* \u2014 You are waiting on Dana for the updated mocks. \u00b7 *3d overdue* \u00b7 in <#C_DESIGN>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=5",
+          "alt_text": "U_ERIN"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Erin Walsh* \u2014 You are waiting on Erin to confirm the deploy window. \u00b7 2d \u00b7 in <#C_ENG_BACKEND>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=27",
+          "alt_text": "U_NINA"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Nina Bauer* \u2014 You are waiting on Nina for the churn dashboard data pull. \u00b7 2d \u00b7 in <#C_PRODUCT>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=49",
+          "alt_text": "U_KARA"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Kara Lopez* \u2014 You are waiting on Kara for the enterprise contract numbers. \u00b7 1d \u00b7 in <#C_SALES>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=26",
+          "alt_text": "U_MIA"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Mia Roy* \u2014 You are waiting on Mia to approve the new offer letter. \u00b7 1d \u00b7 in <#C_PEOPLE>"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Recently auto-closed*  \u00b7  5"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=13",
+          "alt_text": "U_GREG"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Greg Park* \u2014 PR merged \u00b7 <!date^1736094600^{date_short_pretty} at {time}|2025-01-05>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=13",
+          "alt_text": "U_GREG"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Greg Park* \u2014 PR merged \u00b7 <!date^1736067600^{date_short_pretty} at {time}|2025-01-05>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=5",
+          "alt_text": "U_ERIN"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Erin Walsh* \u2014 PR merged \u00b7 <!date^1735992000^{date_short_pretty} at {time}|2025-01-04>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=12",
+          "alt_text": "U_BOB"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Bob Martinez* \u2014 PR merged \u00b7 <!date^1735934400^{date_short_pretty} at {time}|2025-01-03>"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "image",
+          "image_url": "https://i.pravatar.cc/150?img=12",
+          "alt_text": "U_BOB"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Bob Martinez* \u2014 PR merged \u00b7 <!date^1735754700^{date_short_pretty} at {time}|2025-01-01>"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Blocked on you: *3*  \u00b7  Waiting on others: *6*  \u00b7  Auto-closed: *5*"
+        }
+      ]
+    }
+  ]
+}

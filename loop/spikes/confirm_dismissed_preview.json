@@ -1,0 +1,35 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "\ud83d\uddd1\ufe0f *Dismissed*"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Bob is blocked on you merging the widgets PR \u00b7 <@U_BOB>"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "loop_undo_dismiss",
+          "text": {
+            "type": "plain_text",
+            "text": "Undo",
+            "emoji": true
+          },
+          "value": "OBL_B2"
+        }
+      ]
+    }
+  ]
+}

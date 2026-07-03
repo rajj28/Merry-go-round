@@ -1,0 +1,56 @@
+{
+  "blocks": [
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Loop's reasoning: Searched workspace"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Here's what I found*"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Alice is waiting on your review of the onboarding design doc.*\n<@U_ALICE> \u00b7 *3d overdue* \u00b7 in <#C_DESIGN>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=47",
+        "alt_text": "U_ALICE"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Bob is blocked on you merging the widgets PR.*\n<@U_BOB> \u00b7 2d \u00b7 in <#C_ENG_BACKEND>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=12",
+        "alt_text": "U_BOB"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Carol needs your sign-off on the Q3 launch checklist.*\n<@U_CAROL> \u00b7 1d \u00b7 in <#C_LAUNCH>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=45",
+        "alt_text": "U_CAROL"
+      }
+    }
+  ]
+}

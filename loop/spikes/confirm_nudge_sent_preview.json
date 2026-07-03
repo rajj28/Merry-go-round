@@ -1,0 +1,27 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "\u2705 *Nudge sent*"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": ">Hi Alice \u2014 gentle nudge on the onboarding design doc review. I'll get you feedback by end of day. Thanks for your patience! \ud83d\ude4f"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Sent as you to <@U_ALICE> \u00b7 in <#C_DESIGN> \u00b7 <!date^1736121600^{date_short_pretty} at {time}|2025-01-06>"
+        }
+      ]
+    }
+  ]
+}

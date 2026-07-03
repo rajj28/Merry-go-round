@@ -1,0 +1,125 @@
+# =============================================================================
+# Loop — Slack App Manifest
+# =============================================================================
+# Obligation-graph Slack agent for the Slack Agent Builder Challenge.
+#
+# Create the app from this manifest at https://api.slack.com/apps  ("Create New
+# App" -> "From a manifest"). See loop/SETUP_SLACK.md for the full human
+# checklist (install, token generation, sandbox + judge access, verification).
+#
+# Every OAuth scope below is commented with WHY it is needed and WHICH
+# requirement (from .kiro/specs/loop-obligation-agent/requirements.md) it
+# supports. Scopes are kept to the minimum the Tier 0 spine + Tier 1 demo need;
+# broad message-read scopes are privacy-sensitive and justified per Req 14.
+# -----------------------------------------------------------------------------
+
+_metadata:
+  major_version: 1
+  minor_version: 1
+
+display_information:
+  name: Loop
+  description: Loop shows you your obligations, not just your messages.
+  background_color: "#1a365d"
+  long_description: >-
+    Loop is a personal Slack agent that maintains a live obligation graph: every
+    open loop where the ball is in your court (someone is blocked on you) or in
+    someone else's court (you are waiting on someone), auto-detected from Slack
+    conversation with no manual marking. Its signature reveal: "N people are
+    blocked on you right now and you don't know it."
+
+features:
+  # App Home dashboard surface — the "blocking N people" reveal + the three
+  # sections (Blocked-On-You / Waiting-On-Other / Auto-Healed feed).
+  # Requirement 6 (App Home dashboard), Requirement 9 (Auto-Healed feed).
+  app_home:
+    home_tab_enabled: true        # Req 6.1–6.9: render the dashboard in App Home
+    messages_tab_enabled: true    # allow DMs to the app (needed for digest + assistant DM context)
+    messages_tab_read_only_enabled: false
+
+  # Bot user that backs the app's autonomous actions (sensing, rendering,
+  # auto-close, digest). Acting AS the user is handled by the user token, not
+  # this bot user — see oauth_config.scopes.user below.
+  bot_user:
+    display_name: Loop
+    always_online: true
+
+  # Slack AI / Assistant pane — the Conversational Agent's front door with the
+  # visible Tool-Use Trace. Requirement 12 (conversational assistant).
+  assistant_view:
+    assistant_description: Ask Loop who's blocked on you, what you're waiting on, and nudge / delegate / snooze / close in plain language.
+    suggested_prompts:
+      - title: Who's blocked on me?
+        message: Who is blocked on me right now?
+      - title: What am I waiting on?
+        message: What am I waiting on from other people?
+
+oauth_config:
+  scopes:
+    # ----- USER token scopes -----------------------------------------------
+    # These authorize Loop to act AS the user. The user token is requested via
+    # the OAuth "user" scope list and is distinct from the bot token.
+    user:
+      # Post Polite Nudges / delegation messages AS the user, in the source
+      # channel. Human-in-the-loop: only ever after a one-tap confirmation.
+      # Requirement 7 (Polite Nudge), Requirement 10 (Delegate), Requirement 13.
+      - chat:write
+      # Real-Time Search (RTS) API — the AI/semantic search path used by the
+      # Watcher to surface open-loop candidates (assistant.search.context,
+      # gated by is_ai_search_enabled). VERIFIED on the sandbox: RTS runs on this
+      # USER token and needs no per-event action_token. This is the hackathon's
+      # RTS technology, load-bearing for detection. Requirement 2.1 (Watcher RTS).
+      - search:read.public
+
+    # ----- BOT token scopes ------------------------------------------------
+    bot:
+      # Read message history so the Watcher can evaluate candidates and the
+      # Adjudicator can reason over context. One scope per conversation type:
+      - channels:history   # Req 2.2: public-channel messages the user is in
+      - groups:history     # Req 2.2: private-channel messages
+      - im:history         # Req 2.2 + Req 12: direct messages (assistant context)
+      - mpim:history       # Req 2.2: group-DM messages
+      # Resolve people <-> Slack user IDs for obligation nodes, nudges, digest,
+      # and delegation target identity. Requirement 1.1, Req 10.1.
+      - users:read
+      - users:read.email   # map judge/teammate emails to user IDs for delegation/grant verification
+      # Render the App Home dashboard and post the bot's own messages
+      # (confirmation prompts, "feedback not saved" notices, Auto-Healed feed).
+      # Requirement 6, Requirement 9, Requirement 13.2.
+      - chat:write
+      # Post demo-seed messages as distinct personas (per-message username +
+      # icon override) so a LIVE RTS sweep surfaces believable open loops from
+      # different people during the demo. Used only by loop/spikes/seed_sandbox.py.
+      - chat:write.customize
+      # Open DM channels with the user to deliver the Daily Digest.
+      # Requirement 11 (Daily Digest).
+      - im:write
+      # Power the Assistant pane (AI app) and its threads.
+      # Requirement 12 (conversational assistant + Tool-Use Trace).
+      - assistant:write
+      # React to being @-mentioned so the user can pull Loop into a thread.
+      - app_mentions:read
+
+settings:
+  # Event subscriptions delivered over Socket Mode (no public HTTP endpoint).
+  event_subscriptions:
+    bot_events:
+      - app_home_opened              # Req 6.1: render dashboard when App Home opens
+      - message.channels             # Req 2.2: live candidate evaluation (public)
+      - message.groups               # Req 2.2: live candidate evaluation (private)
+      - message.im                   # Req 2.2 + Req 12: DMs / assistant context
+      - message.mpim                 # Req 2.2: group-DM candidate evaluation
+      - assistant_thread_started     # Req 12: assistant pane session start
+      - assistant_thread_context_changed  # Req 12: assistant pane context updates
+
+  # Interactivity is required for one-tap Confirm/Dismiss/Nudge/Snooze/Delegate
+  # Block Kit actions. Delivered over Socket Mode. Requirement 5, 7, 10, 13.
+  interactivity:
+    is_enabled: true
+
+  # Socket Mode ON: the app connects out over a WebSocket using an app-level
+  # token, so the sandbox needs no public URL. Required by task 1.1.
+  socket_mode_enabled: true
+
+  org_deploy_enabled: false
+  token_rotation_enabled: false

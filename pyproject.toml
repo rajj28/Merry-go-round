@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loop-obligation-agent"
+version = "0.1.0"
+description = "Loop — a personal Slack agent that maintains a live obligation graph (Tier 0 spine + Tier 1 demo surface)."
+readme = "loop/README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Loop Team" }]
+
+# Pinned (compatible-release) dependencies for Python 3.12.
+dependencies = [
+    # Slack app framework — Events API, Block Kit, App Home, Assistant, interactivity.
+    "slack-bolt~=1.21",
+    "slack-sdk~=3.33",
+    # Obligation Graph store — embedded SQLite via SQLModel/SQLAlchemy.
+    "sqlmodel~=0.0.22",
+    "sqlalchemy~=2.0",
+    # In-process scheduler for the Watcher sweep (<=60s) and the daily digest.
+    "apscheduler~=3.10",
+    # Claude reasoning tier (Haiku 4.5 + Opus 4.8).
+    "anthropic~=0.39",
+    # Model Context Protocol client for GitHub artifact verification.
+    "mcp~=1.1",
+    # Workspace-scoped token / config loading.
+    "python-dotenv~=1.0",
+]
+
+[project.optional-dependencies]
+# Testing toolchain — property-based (Hypothesis) + example tests (pytest).
+test = [
+    "pytest~=8.3",
+    "hypothesis~=6.115",
+]
+dev = [
+    "pytest~=8.3",
+    "hypothesis~=6.115",
+    "ruff~=0.7",
+]
+
+# The application source lives in the loop/ subfolder, kept separate from the
+# .kiro spec files and the .jsonl logs at the workspace root.
+[tool.setuptools.packages.find]
+include = ["loop*"]
+exclude = ["loop.tests*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+# Workspace root on the path so `import loop` (and loop.watcher, loop.config, ...)
+# resolves to the loop/ source folder without an editable install.
+pythonpath = ["."]
+testpaths = ["loop"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "property: a property-based (Hypothesis) test; must run >= MIN_HYPOTHESIS_EXAMPLES examples",
+]
+addopts = "-ra --strict-markers --strict-config"

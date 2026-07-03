@@ -1,0 +1,58 @@
+{
+  "type": "modal",
+  "callback_id": "loop_nudge_modal",
+  "private_metadata": "OBL_B1",
+  "title": {
+    "type": "plain_text",
+    "text": "Send a nudge",
+    "emoji": true
+  },
+  "submit": {
+    "type": "plain_text",
+    "text": "Send as you",
+    "emoji": true
+  },
+  "close": {
+    "type": "plain_text",
+    "text": "Cancel",
+    "emoji": true
+  },
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Alice Nguyen* is waiting on you:\nAlice is waiting on your review of the onboarding design doc."
+      }
+    },
+    {
+      "type": "input",
+      "block_id": "nudge_message",
+      "label": {
+        "type": "plain_text",
+        "text": "Your message",
+        "emoji": true
+      },
+      "element": {
+        "type": "plain_text_input",
+        "action_id": "nudge_message_input",
+        "multiline": true,
+        "initial_value": "Hi Alice \u2014 gentle nudge on the onboarding design doc review. I know you're blocked on my sign-off; I'll get you feedback by end of day. Thanks for your patience! \ud83d\ude4f"
+      },
+      "hint": {
+        "type": "plain_text",
+        "text": "Loop drafted this for you \u2014 edit it however you like.",
+        "emoji": true
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Loop will send this *as you* \u00b7 in <#C_DESIGN>"
+        }
+      ]
+    }
+  ]
+}

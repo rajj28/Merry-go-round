@@ -1,0 +1,723 @@
+{
+  "type": "home",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "3 people are blocked on you",
+        "emoji": true
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Loop found these automatically \u00b7 scanned <!date^1736121600^{date_short_pretty} at {time}|2025-01-06> \u00b7 14 loops tracked"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "block_id": "hero_actions",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_review_blocked",
+          "text": {
+            "type": "plain_text",
+            "text": "Review blocked loops",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "review_blocked"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "Blocked on you",
+        "emoji": true
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Alice is waiting on your review of the onboarding design doc.*\n<@U_ALICE> \u00b7 *3d overdue* \u00b7 in <#C_DESIGN>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=47",
+        "alt_text": "U_ALICE"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_B1",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_B1"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_B1"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_B1"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_B1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Bob is blocked on you merging the widgets PR.*\n<@U_BOB> \u00b7 2d \u00b7 in <#C_ENG_BACKEND>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=12",
+        "alt_text": "U_BOB"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_B2",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_B2"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_B2"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_B2"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_B2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Carol needs your sign-off on the Q3 launch checklist.*\n<@U_CAROL> \u00b7 1d \u00b7 in <#C_LAUNCH>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=45",
+        "alt_text": "U_CAROL"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_B3",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_B3"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_B3"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_B3"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_B3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "Waiting on others",
+        "emoji": true
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*You are waiting on Greg for the frontend bug-fix estimate.*\n<@U_GREG> \u00b7 *4d overdue* \u00b7 in <#C_ENG_FRONTEND>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=13",
+        "alt_text": "U_GREG"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_W3",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_W3"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_W3"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_W3"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_W3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*You are waiting on Dana for the updated mocks.*\n<@U_DANA> \u00b7 *3d overdue* \u00b7 in <#C_DESIGN>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=31",
+        "alt_text": "U_DANA"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_W1",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_W1"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_W1"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_W1"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_W1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*You are waiting on Erin to confirm the deploy window.*\n<@U_ERIN> \u00b7 2d \u00b7 in <#C_ENG_BACKEND>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=5",
+        "alt_text": "U_ERIN"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_W2",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_W2"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_W2"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_W2"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_W2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*You are waiting on Nina for the churn dashboard data pull.*\n<@U_NINA> \u00b7 2d \u00b7 in <#C_PRODUCT>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=27",
+        "alt_text": "U_NINA"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_W5",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_W5"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_W5"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_W5"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_W5"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*You are waiting on Kara for the enterprise contract numbers.*\n<@U_KARA> \u00b7 1d \u00b7 in <#C_SALES>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=49",
+        "alt_text": "U_KARA"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_W4",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_W4"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_W4"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_W4"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_W4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*You are waiting on Mia to approve the new offer letter.*\n<@U_MIA> \u00b7 1d \u00b7 in <#C_PEOPLE>"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=26",
+        "alt_text": "U_MIA"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "row_actions::OBL_W6",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "OBL_W6"
+        },
+        {
+          "type": "overflow",
+          "action_id": "app_home_row_overflow",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Snooze",
+                "emoji": true
+              },
+              "value": "snooze::OBL_W6"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Delegate",
+                "emoji": true
+              },
+              "value": "delegate::OBL_W6"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Dismiss",
+                "emoji": true
+              },
+              "value": "dismiss::OBL_W6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "Recently auto-closed",
+        "emoji": true
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Resolved with <@U_GREG> \u2014 PR merged"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=13",
+        "alt_text": "U_GREG"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "<!date^1736094600^{date_short_pretty} at {time}|2025-01-05> \u00b7 closed automatically"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Resolved with <@U_GREG> \u2014 PR merged"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=13",
+        "alt_text": "U_GREG"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "<!date^1736067600^{date_short_pretty} at {time}|2025-01-05> \u00b7 closed automatically"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Resolved with <@U_ERIN> \u2014 PR merged"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=5",
+        "alt_text": "U_ERIN"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "<!date^1735992000^{date_short_pretty} at {time}|2025-01-04> \u00b7 closed automatically"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Resolved with <@U_BOB> \u2014 PR merged"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=12",
+        "alt_text": "U_BOB"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "<!date^1735934400^{date_short_pretty} at {time}|2025-01-03> \u00b7 closed automatically"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Resolved with <@U_BOB> \u2014 PR merged"
+      },
+      "accessory": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=12",
+        "alt_text": "U_BOB"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "<!date^1735754700^{date_short_pretty} at {time}|2025-01-01> \u00b7 closed automatically"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Blocked on you: *3*  \u00b7  Waiting on others: *6*  \u00b7  Auto-closed: *5*"
+        }
+      ]
+    }
+  ]
+}

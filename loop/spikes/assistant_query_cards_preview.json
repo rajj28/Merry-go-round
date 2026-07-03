@@ -1,0 +1,205 @@
+{
+  "blocks": [
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Loop's reasoning: Searched workspace"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Here's what I found*"
+      }
+    },
+    {
+      "type": "card",
+      "icon": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=47",
+        "alt_text": "U_ALICE"
+      },
+      "title": {
+        "type": "mrkdwn",
+        "text": "Alice is waiting on your review of the onboarding design doc."
+      },
+      "subtitle": {
+        "type": "mrkdwn",
+        "text": "<@U_ALICE> \u00b7 *3d overdue* \u00b7 in <#C_DESIGN>"
+      },
+      "actions": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "value": "OBL_B1",
+          "style": "primary"
+        },
+        {
+          "type": "button",
+          "action_id": "app_home_snooze",
+          "text": {
+            "type": "plain_text",
+            "text": "Snooze",
+            "emoji": true
+          },
+          "value": "OBL_B1"
+        },
+        {
+          "type": "button",
+          "action_id": "app_home_dismiss",
+          "text": {
+            "type": "plain_text",
+            "text": "Dismiss",
+            "emoji": true
+          },
+          "value": "OBL_B1",
+          "style": "danger"
+        }
+      ]
+    },
+    {
+      "type": "card",
+      "icon": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=12",
+        "alt_text": "U_BOB"
+      },
+      "title": {
+        "type": "mrkdwn",
+        "text": "Bob is blocked on you merging the widgets PR."
+      },
+      "subtitle": {
+        "type": "mrkdwn",
+        "text": "<@U_BOB> \u00b7 2d \u00b7 in <#C_ENG_BACKEND>"
+      },
+      "actions": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "value": "OBL_B2",
+          "style": "primary"
+        },
+        {
+          "type": "button",
+          "action_id": "app_home_snooze",
+          "text": {
+            "type": "plain_text",
+            "text": "Snooze",
+            "emoji": true
+          },
+          "value": "OBL_B2"
+        },
+        {
+          "type": "button",
+          "action_id": "app_home_dismiss",
+          "text": {
+            "type": "plain_text",
+            "text": "Dismiss",
+            "emoji": true
+          },
+          "value": "OBL_B2",
+          "style": "danger"
+        }
+      ]
+    },
+    {
+      "type": "card",
+      "icon": {
+        "type": "image",
+        "image_url": "https://i.pravatar.cc/150?img=45",
+        "alt_text": "U_CAROL"
+      },
+      "title": {
+        "type": "mrkdwn",
+        "text": "Carol needs your sign-off on the Q3 launch checklist."
+      },
+      "subtitle": {
+        "type": "mrkdwn",
+        "text": "<@U_CAROL> \u00b7 1d \u00b7 in <#C_LAUNCH>"
+      },
+      "actions": [
+        {
+          "type": "button",
+          "action_id": "app_home_nudge",
+          "text": {
+            "type": "plain_text",
+            "text": "Nudge",
+            "emoji": true
+          },
+          "value": "OBL_B3",
+          "style": "primary"
+        },
+        {
+          "type": "button",
+          "action_id": "app_home_snooze",
+          "text": {
+            "type": "plain_text",
+            "text": "Snooze",
+            "emoji": true
+          },
+          "value": "OBL_B3"
+        },
+        {
+          "type": "button",
+          "action_id": "app_home_dismiss",
+          "text": {
+            "type": "plain_text",
+            "text": "Dismiss",
+            "emoji": true
+          },
+          "value": "OBL_B3",
+          "style": "danger"
+        }
+      ]
+    },
+    {
+      "type": "data_visualization",
+      "title": "Loops by age",
+      "chart": {
+        "type": "bar",
+        "series": [
+          {
+            "name": "Loops",
+            "data": [
+              {
+                "label": "Fresh (<24h)",
+                "value": 0
+              },
+              {
+                "label": "Aging (1\u20133d)",
+                "value": 2
+              },
+              {
+                "label": "Overdue (>3d)",
+                "value": 1
+              }
+            ]
+          }
+        ],
+        "axis_config": {
+          "categories": [
+            "Fresh (<24h)",
+            "Aging (1\u20133d)",
+            "Overdue (>3d)"
+          ],
+          "x_label": "Age",
+          "y_label": "Loops"
+        }
+      }
+    }
+  ]
+}

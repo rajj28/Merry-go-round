@@ -1,0 +1,31 @@
+# Secrets — never commit real workspace tokens.
+.env
+loop/.env
+
+# Embedded Obligation Graph store.
+*.db
+*.sqlite
+*.sqlite3
+
+# Claude internal session/memory files (not part of the app).
+*.jsonl
+memory/
+
+# Kiro internal spec/agent cache (not needed in the repo).
+.kiro/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/

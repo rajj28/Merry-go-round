@@ -1,0 +1,35 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "\ud83d\udd53 *Snoozed*"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Carol needs your sign-off on the Q3 launch checklist \u00b7 <@U_CAROL> \u00b7 hidden until <!date^1736121600^{date_short_pretty} at {time}|2025-01-06>"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "loop_undo_snooze",
+          "text": {
+            "type": "plain_text",
+            "text": "Undo",
+            "emoji": true
+          },
+          "value": "OBL_B3"
+        }
+      ]
+    }
+  ]
+}

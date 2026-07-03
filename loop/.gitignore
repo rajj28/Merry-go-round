@@ -1,0 +1,23 @@
+# Secrets — never commit real workspace tokens.
+.env
+
+# Embedded Obligation Graph store.
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/

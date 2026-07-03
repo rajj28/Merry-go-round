@@ -1,0 +1,56 @@
+{
+  "blocks": [
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Loop's reasoning: Searched workspace \u2192 Drafted reply"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": ">Hi Bob \u2014 gentle nudge on the widgets PR, it has been a couple of days. Could you take a look when you get a sec? Thanks!"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Loop will send this as you \u00b7 in <#C_ENG_BACKEND>"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "block_id": "assistant_confirm",
+      "elements": [
+        {
+          "type": "button",
+          "action_id": "assistant_confirm_send",
+          "text": {
+            "type": "plain_text",
+            "text": "Send",
+            "emoji": true
+          },
+          "style": "primary",
+          "value": "U_USER"
+        },
+        {
+          "type": "button",
+          "action_id": "assistant_decline_send",
+          "text": {
+            "type": "plain_text",
+            "text": "Cancel",
+            "emoji": true
+          },
+          "value": "U_USER"
+        }
+      ]
+    }
+  ]
+}
