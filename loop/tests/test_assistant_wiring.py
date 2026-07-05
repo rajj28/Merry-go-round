@@ -15,7 +15,7 @@ Validates: Requirements 12.5, 12.6, 12.7.
 from __future__ import annotations
 
 from loop.action.action_agent import ActionAgent
-from loop.adjudicator.adjudicator import Adjudicator, Direction, OpusAdjudication
+from loop.adjudicator.adjudicator import Adjudicator, Direction, SmartAdjudication
 from loop.app import LoopApp
 from loop.conversational.assistant_view import (
     ACTION_ASSISTANT_CONFIRM,
@@ -92,8 +92,8 @@ class FakeVerifier:
         return self.result
 
 
-def _opus_user_owes(_c, *, user_id):  # noqa: ANN001
-    return OpusAdjudication(
+def _smart_user_owes(_c, *, user_id):  # noqa: ANN001
+    return SmartAdjudication(
         is_loop=True,
         involves_user=True,
         direction=Direction.USER_OWES,
@@ -127,16 +127,16 @@ def _build_app(*, parser=None, sends=None) -> LoopApp:
     def send_as_user(channel, text):  # noqa: ANN001
         sent.append((channel, text))
 
-    def claude_draft(obligation):  # noqa: ANN001
+    def draft(obligation):  # noqa: ANN001
         return "Hi — nudging you about: " + obligation.subject_summary
 
     action = ActionAgent(
         graph,
         verifier,  # type: ignore[arg-type]
         slack_send_as_user=send_as_user,
-        claude_draft=claude_draft,
+        draft=draft,
     )
-    adjudicator = Adjudicator(_opus_user_owes, graph)
+    adjudicator = Adjudicator(_smart_user_owes, graph)
     queue = AdjudicationQueue(adjudicator, USER)
     watcher = Watcher(
         graph,
@@ -260,3 +260,73 @@ def test_post_assistant_reply_posts_blocks_and_returns_result():
     assert client.messages[0]["channel"] == USER
     assert client.messages[0].get("blocks")
     assert "Tools:" in client.messages[0]["text"]
+
+
+# --------------------------------------------------------------------------- #
+# The live message event routes DMs to the assistant, channels to the Watcher
+# --------------------------------------------------------------------------- #
+def _message_handler(app: LoopApp):
+    bolt = FakeBoltApp()
+    app.register_handlers(bolt)
+    return bolt.events["message"]
+
+
+def test_dm_message_event_replies_inside_the_assistant_thread():
+    app = _build_app()
+    app.graph.upsert(_obligation())
+    client = FakeClient()
+
+    _message_handler(app)(
+        {
+            "channel_type": "im",
+            "channel": "D1",
+            "thread_ts": "1700000000.0100",
+            "user": USER,
+            "text": "who is blocked on me?",
+        },
+        client,
+    )
+
+    assert len(client.messages) == 1
+    posted = client.messages[0]
+    assert posted["channel"] == "D1"  # in the pane, not a bare DM to the user id
+    assert posted["thread_ts"] == "1700000000.0100"
+    assert posted.get("blocks")
+    assert "please review the deck" in posted["text"]
+
+
+def test_dm_bot_echo_and_edits_never_get_a_reply():
+    app = _build_app()
+    app.graph.upsert(_obligation())
+    client = FakeClient()
+    handler = _message_handler(app)
+
+    handler(
+        {"channel_type": "im", "channel": "D1", "bot_id": "B1", "text": "hi"}, client
+    )
+    handler(
+        {"channel_type": "im", "channel": "D1", "subtype": "message_changed"}, client
+    )
+    handler({"channel_type": "im", "channel": "D1", "user": USER, "text": "  "}, client)
+
+    assert client.messages == []  # the app never answers itself or edits
+
+
+def test_channel_message_event_still_feeds_the_watcher():
+    app = _build_app()
+    client = FakeClient()
+
+    _message_handler(app)(
+        {
+            "channel_type": "channel",
+            "channel": "C1",
+            "ts": "1700000001.0001",
+            "user": OTHER,
+            "text": "I'll send the numbers tomorrow",
+        },
+        client,
+    )
+
+    written = app.graph.query(ObligationFilter())
+    assert any(o.source_msg_ts == "1700000001.0001" for o in written)
+    assert client.messages == []  # detection never posts chat replies

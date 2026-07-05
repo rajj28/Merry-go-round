@@ -4,7 +4,7 @@ This module is the *data half* of the Seeded Deterministic Demo Workspace
 (design.md → "Seeded Deterministic Demo Workspace"). It holds the **precomputed
 adjudication results** — the obligations exactly as the Adjudicator would have
 produced them — so demo mode can resolve seeded candidates from these pinned
-results instead of a live Opus call (design point 2). Loading this pack
+results instead of a live the smart tier call (design point 2). Loading this pack
 initializes the Obligation Graph to a known, reproducible state.
 
 Production-scale demo org ("Northwind")
@@ -505,6 +505,87 @@ def seed_obligations() -> list[Obligation]:
             source_msg_ts="1736020800.002000",
             subject_summary="Leo's customer escalation — snoozed until tomorrow.",
             snoozed_until=_SNOOZE_UNTIL,
+        ),
+        # =================================================================
+        # WORKSPACE GRAPH INTELLIGENCE — third-party edges (Demo Beat 5).
+        #
+        # These five edges live BELOW the surfacing gate (0.45 < 0.5) so they
+        # never appear in the personal sections and the pinned contract (hero
+        # == 3, six waiting-on-other) is untouched. They exist for the chain
+        # engine, which analyzes graph *structure* regardless of the personal
+        # surfacing gate:
+        #
+        #   * OBL_RING1–3 — a three-person deadlock (Frank → Hank → Ivy →
+        #     Frank): each is waiting on the next, so nothing moves until the
+        #     Cycle Breaker picks the first move. Renders the Deadlocks card.
+        #   * OBL_CHAIN1–2 — a chain hanging off the user's own OBL_B3 (the
+        #     design review Carol needs): Carol can't unblock Leo, who can't
+        #     unblock Jack, until the user reviews. Drives the chain-pressure
+        #     line: "holding up 3 people downstream."
+        #
+        # No edge here creates a second, unintended ring: none of Frank, Hank,
+        # Ivy, Leo, or Jack owes the user an active edge, so every cycle in the
+        # seeded workspace is exactly the one designed above.
+        # =================================================================
+        Obligation(
+            obligation_id="OBL_RING1",
+            owes_person_id=_FRANK,
+            owed_person_id=_HANK,
+            owner_person_id=_FRANK,
+            loop_state=LoopState.WAITING_ON_OTHER,
+            confidence_score=0.45,  # < SEED_THRESHOLD → hidden from sections
+            last_touch_timestamp="2025-01-03T09:00:00+00:00",
+            source_msg_channel="C_ENG_BACKEND",
+            source_msg_ts="1735894800.002200",
+            subject_summary="Load-test results Hank needs for the capacity plan.",
+        ),
+        Obligation(
+            obligation_id="OBL_RING2",
+            owes_person_id=_HANK,
+            owed_person_id=_IVY,
+            owner_person_id=_HANK,
+            loop_state=LoopState.WAITING_ON_OTHER,
+            confidence_score=0.45,  # < SEED_THRESHOLD → hidden from sections
+            last_touch_timestamp="2025-01-04T11:00:00+00:00",
+            source_msg_channel="C_PRODUCT",
+            source_msg_ts="1735988400.002300",
+            subject_summary="Capacity sign-off Ivy needs for the pricing page.",
+        ),
+        Obligation(
+            obligation_id="OBL_RING3",
+            owes_person_id=_IVY,
+            owed_person_id=_FRANK,
+            owner_person_id=_IVY,
+            loop_state=LoopState.WAITING_ON_OTHER,
+            confidence_score=0.45,  # < SEED_THRESHOLD → hidden from sections
+            last_touch_timestamp="2025-01-05T15:00:00+00:00",
+            source_msg_channel="C_PRODUCT",
+            source_msg_ts="1736089200.002400",
+            subject_summary="Final pricing copy Frank needs to close the load-test writeup.",
+        ),
+        Obligation(
+            obligation_id="OBL_CHAIN1",
+            owes_person_id=_CAROL,
+            owed_person_id=_LEO,
+            owner_person_id=_CAROL,
+            loop_state=LoopState.WAITING_ON_OTHER,
+            confidence_score=0.45,  # < SEED_THRESHOLD → hidden from sections
+            last_touch_timestamp="2025-01-05T09:30:00+00:00",
+            source_msg_channel="C_DESIGN",
+            source_msg_ts="1736069400.002500",
+            subject_summary="Design tokens Leo needs for the customer demo.",
+        ),
+        Obligation(
+            obligation_id="OBL_CHAIN2",
+            owes_person_id=_LEO,
+            owed_person_id=_JACK,
+            owner_person_id=_LEO,
+            loop_state=LoopState.WAITING_ON_OTHER,
+            confidence_score=0.45,  # < SEED_THRESHOLD → hidden from sections
+            last_touch_timestamp="2025-01-05T16:00:00+00:00",
+            source_msg_channel="C_CUSTOMER",
+            source_msg_ts="1736092800.002600",
+            subject_summary="Demo environment Jack needs for the launch screenshots.",
         ),
         # --- manually-closed ×1: healed, but NOT in the auto-healed feed -------
         Obligation(

@@ -21,7 +21,9 @@ dependencies = [
     "sqlalchemy~=2.0",
     # In-process scheduler for the Watcher sweep (<=60s) and the daily digest.
     "apscheduler~=3.10",
-    # Claude reasoning tier (Haiku 4.5 + Opus 4.8).
+    # Two-tier LLM reasoning — provider-agnostic (loop/llm.py). Groq is the free
+    # default via the OpenAI-compatible SDK; Anthropic is the optional Claude path.
+    "openai~=1.54",
     "anthropic~=0.39",
     # Model Context Protocol client for GitHub artifact verification.
     "mcp~=1.1",

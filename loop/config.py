@@ -127,6 +127,22 @@ class Settings:
     # confirmed to render in the target workspace.
     home_layout: str = "stack"
 
+    # --- Rich Block Kit blocks (native charts / tables / containers) ---------
+    # When true, the App Home upgrades to the newest Block Kit blocks: a native
+    # `data_visualization` chart for the auto-heal trend and aging spread, a
+    # paginated `data_table` for the auto-closed feed, and collapsible
+    # `container` blocks for the map. Publish is failure-safe: if the workspace
+    # rejects any rich block, the app instantly republishes the classic view,
+    # so this can default ON. Loaded from LOOP_RICH_BLOCKS.
+    rich_blocks: bool = True
+
+    # --- Per-member user tokens (multi-user send-as-you) ---------------------
+    # Loaded from LOOP_USER_TOKENS as "U012ABC:xoxp-...,U034DEF:xoxp-...".
+    # Each member who has granted the app user scopes gets their own xoxp and
+    # their composer sends post AS them; members absent here fall back to
+    # attributed bot posting. Stored as pairs to keep the dataclass frozen.
+    user_tokens: tuple[tuple[str, str], ...] = ()
+
     # Names that hold secrets and should never be logged verbatim.
     _secret_fields: tuple[str, ...] = field(
         default=(
@@ -137,6 +153,7 @@ class Settings:
             "groq_api_key",
             "anthropic_api_key",
             "github_mcp_token",
+            "user_tokens",
         ),
         repr=False,
         compare=False,
@@ -162,6 +179,22 @@ class Settings:
                 value = "***" if value else ""
             parts.append(f"{f.name}={value!r}")
         return f"Settings({', '.join(parts)})"
+
+
+def _as_token_pairs(value: str | None) -> tuple[tuple[str, str], ...]:
+    """Parse LOOP_USER_TOKENS ("U1:xoxp-a,U2:xoxp-b") into ((user, token), ...).
+
+    Malformed entries (no colon, empty side) are skipped rather than fatal so a
+    typo in one member's entry cannot take the app down.
+    """
+    if not value:
+        return ()
+    pairs = []
+    for part in value.split(","):
+        user, _, token = part.strip().partition(":")
+        if user.strip() and token.strip():
+            pairs.append((user.strip(), token.strip()))
+    return tuple(pairs)
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -198,6 +231,7 @@ def load_settings() -> Settings:
         slack_app_token=os.getenv("SLACK_APP_TOKEN", ""),
         slack_user_token=os.getenv("SLACK_USER_TOKEN", ""),
         slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", ""),
+        user_tokens=_as_token_pairs(os.getenv("LOOP_USER_TOKENS")),
         llm_provider=os.getenv("LLM_PROVIDER", "groq"),
         # GROK_API is the primary key name (per the user's .env); fall back to the
         # conventional GROQ_API_KEY if that is what's set instead.
@@ -217,6 +251,7 @@ def load_settings() -> Settings:
         ),
         watch_channels=_as_str_tuple(os.getenv("LOOP_WATCH_CHANNELS")),
         demo_mode=_as_bool(os.getenv("LOOP_DEMO_MODE"), False),
+        rich_blocks=_as_bool(os.getenv("LOOP_RICH_BLOCKS"), True),
         logo_url=os.getenv("LOOP_LOGO_URL", ""),
         ui_style=_ui_style,
         home_style=os.getenv("LOOP_HOME_STYLE", "") or _ui_style,

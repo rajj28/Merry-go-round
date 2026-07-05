@@ -13,7 +13,7 @@ These tests exercise the natural-language *control* surface of the front door
 
 The tests run against the *real* Conversational Agent, the *real* Action Agent,
 and the *real* in-memory Obligation Graph; only the outward Slack "send as user"
-port, the Verifier (GitHub MCP), and Claude drafting are mocked so behaviour is
+port, the Verifier (GitHub MCP), and LLM drafting are mocked so behaviour is
 deterministic. Natural-language understanding is driven through the injectable
 parser port with explicit :class:`ParsedCommand` / :class:`ParsedQuery` intents,
 so routing/disambiguation/trace logic is tested independently of NL coverage —
@@ -139,7 +139,7 @@ def _action_agent(
         verifier=verifier,  # type: ignore[arg-type]
         now=clock.iso,
         slack_send_as_user=sender,
-        claude_draft=lambda obligation: "Friendly nudge text.",
+        draft=lambda obligation: "Friendly nudge text.",
     )
 
 

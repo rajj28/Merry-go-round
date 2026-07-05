@@ -9,12 +9,11 @@ and you don't know it."*
 This `loop/` folder holds the application source for the Tier 0 spine (detection
 engine + obligation-graph store + confirm/dismiss feedback) and the Tier 1 demo
 surface. The project tooling (`pyproject.toml`, `conftest.py`) lives one level up
-at the workspace root, kept separate from the source. See the spec in
-`.kiro/specs/loop-obligation-agent/` for requirements and design.
+at the workspace root, kept separate from the source.
 
 ## Requirements
 
-- **Python 3.12**
+- **Python 3.12+**
 - A Slack workspace + app (Socket Mode), an LLM provider key, and access to a
   GitHub MCP server. Loop is **provider-agnostic**: it runs on Groq (free,
   OpenAI-compatible — the default) or Anthropic/Claude, selected by `LLM_PROVIDER`.

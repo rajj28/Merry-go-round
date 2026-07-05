@@ -5,8 +5,8 @@ stage, complementing the example-based unit tests in ``test_adjudicator.py``.
 
 Both properties drive the *real* :class:`loop.adjudicator.adjudicator.Adjudicator`
 against:
-  * a **mocked Opus reasoning port** — a thin injectable callable that returns a
-    generated :class:`OpusAdjudication` (or raises, to model an Opus
+  * a **mocked the smart tier reasoning port** — a thin injectable callable that returns a
+    generated :class:`SmartAdjudication` (or raises, to model a smart-tier
     error/unreachable, Req 3.7); the live Anthropic call is never touched.
   * a fresh **in-memory Obligation Graph** (``:memory:`` SqliteObligationGraph) per
     example, so each property observes the graph effect of exactly one adjudication.
@@ -17,7 +17,7 @@ endpoints (owes/owed) follow the direction exactly.
 
 Property 9 (task 5.4) — non-loops produce no graph change (Req 3.4, 3.7): for any
 adjudication that is not-a-loop / does-not-involve-user / unknown-direction, or any
-Opus error (the port raises), the graph is left completely unchanged.
+smart-tier error (the port raises), the graph is left completely unchanged.
 
 Runs >=100 Hypothesis examples each (enforced by the workspace conftest profile).
 """
@@ -31,7 +31,7 @@ from loop.adjudicator.adjudicator import (
     AdjudicationOutcome,
     Adjudicator,
     Direction,
-    OpusAdjudication,
+    SmartAdjudication,
 )
 from loop.graph.models import LoopState
 from loop.graph.sqlite_store import IN_MEMORY, SqliteObligationGraph
@@ -40,25 +40,25 @@ from loop.watcher.rts_contract import CandidateMessage
 
 
 # --------------------------------------------------------------------------- #
-# Test doubles — the injectable Opus port
+# Test doubles — the injectable the smart tier port
 # --------------------------------------------------------------------------- #
 class StubReasoningClient:
-    """A mock Opus port that returns a fixed generated judgement."""
+    """A mock the smart tier port that returns a fixed generated judgement."""
 
-    def __init__(self, judgement: OpusAdjudication) -> None:
+    def __init__(self, judgement: SmartAdjudication) -> None:
         self._judgement = judgement
 
-    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> OpusAdjudication:
+    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> SmartAdjudication:
         return self._judgement
 
 
 class RaisingReasoningClient:
-    """A mock Opus port that raises, modelling an Opus error/unreachable (Req 3.7)."""
+    """A mock the smart tier port that raises, modelling a smart-tier error/unreachable (Req 3.7)."""
 
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> OpusAdjudication:
+    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> SmartAdjudication:
         raise self._exc
 
 
@@ -135,7 +135,7 @@ def test_adjudicated_direction_matches_who_owes(
 ) -> None:
     """Loop_State and edge endpoints follow the judged direction exactly (Req 3.2)."""
     candidate = data.draw(candidates(author_id=other_id))
-    judgement = OpusAdjudication(
+    judgement = SmartAdjudication(
         is_loop=True,
         involves_user=True,
         direction=direction,
@@ -177,18 +177,18 @@ def test_adjudicated_direction_matches_who_owes(
 # --------------------------------------------------------------------------- #
 # Property 9: Non-loops produce no graph change (task 5.4)
 # --------------------------------------------------------------------------- #
-# Negative-case judgements: each is a *valid* OpusAdjudication that the Adjudicator
+# Negative-case judgements: each is a *valid* SmartAdjudication that the Adjudicator
 # must discard with no write (Req 3.4) — not-a-loop, does-not-involve-user, and
 # unknown-direction. is_loop/involves_user are otherwise free to vary so the
 # generator covers the full discard surface, not just one canonical shape.
 @st.composite
-def non_loop_judgements(draw: st.DrawFn) -> OpusAdjudication:
+def non_loop_judgements(draw: st.DrawFn) -> SmartAdjudication:
     """Generate a judgement that must be DISCARDED (one of the three Req 3.4 cases)."""
     case = draw(st.sampled_from(["not_a_loop", "no_user", "unknown_direction"]))
     confidence = draw(confidences)
     summary = draw(st.text(max_size=120))
     if case == "not_a_loop":
-        return OpusAdjudication(
+        return SmartAdjudication(
             is_loop=False,
             involves_user=draw(st.booleans()),
             direction=draw(st.sampled_from(list(Direction))),
@@ -197,7 +197,7 @@ def non_loop_judgements(draw: st.DrawFn) -> OpusAdjudication:
         )
     if case == "no_user":
         # A real loop, but it does not involve the tracked user.
-        return OpusAdjudication(
+        return SmartAdjudication(
             is_loop=True,
             involves_user=False,
             direction=draw(st.sampled_from(list(Direction))),
@@ -205,7 +205,7 @@ def non_loop_judgements(draw: st.DrawFn) -> OpusAdjudication:
             subject_summary=summary,
         )
     # unknown_direction: a real, user-involving loop whose direction is unclear.
-    return OpusAdjudication(
+    return SmartAdjudication(
         is_loop=True,
         involves_user=True,
         direction=Direction.UNKNOWN,
@@ -216,7 +216,7 @@ def non_loop_judgements(draw: st.DrawFn) -> OpusAdjudication:
 
 # Feature: loop-obligation-agent, Property 9: Non-loops produce no graph change.
 # For any adjudication outcome that is not-a-loop, does-not-involve-user,
-# unknown-direction, or an Opus error (port raises), the graph is left unchanged
+# unknown-direction, or a smart-tier error (port raises), the graph is left unchanged
 # (no obligation created or modified).
 # Validates: Requirements 3.4, 3.7
 @given(
@@ -229,11 +229,11 @@ def non_loop_judgements(draw: st.DrawFn) -> OpusAdjudication:
 def test_non_loops_produce_no_graph_change(
     user_id: str,
     other_id: str,
-    judgement: OpusAdjudication,
+    judgement: SmartAdjudication,
     raises: bool,
     data: st.DataObject,
 ) -> None:
-    """Negative judgements and Opus errors never touch the graph (Req 3.4, 3.7)."""
+    """Negative judgements and smart-tier errors never touch the graph (Req 3.4, 3.7)."""
     candidate = data.draw(candidates(author_id=other_id))
     graph = _graph()
 
@@ -241,7 +241,7 @@ def test_non_loops_produce_no_graph_change(
     assert graph.query(ObligationFilter()) == []
 
     if raises:
-        # Opus error/unreachable: the port raises (Req 3.7).
+        # smart-tier error/unreachable: the port raises (Req 3.7).
         adjudicator = Adjudicator(
             RaisingReasoningClient(RuntimeError("opus unreachable")), graph
         )

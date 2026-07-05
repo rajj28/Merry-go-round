@@ -68,15 +68,16 @@ Dynamic orchestration (additive — the "agentic orchestration" showcase):
     unchanged unless a planner is explicitly wired.
 
 Design discipline: natural-language *understanding* is isolated behind an injectable
-parser port (mirroring the Action Agent's injectable Claude / Slack ports), so the
+parser port (mirroring the Action Agent's injectable the LLM / Slack ports), so the
 routing, disambiguation, trace, and confirmation logic tested here never depends on a
 live LLM. A deterministic rule-based :func:`default_parser` handles the demo phrases.
 """
 
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Callable, Optional, Union
@@ -104,6 +105,8 @@ from loop.conversational.planner import (
     PlanStep,
     Planner,
 )
+
+logger = logging.getLogger(__name__)
 
 # The in-pane interaction window for a one-tap confirmation (Req 12.7). This is the
 # tighter conversational timeout; the broader send-as-user confirmation timeout
@@ -361,6 +364,32 @@ _DURATION_UNITS: dict[str, timedelta] = {
 _ACTIVE_STATES: frozenset[LoopState] = frozenset(
     {LoopState.BLOCKED_ON_YOU, LoopState.WAITING_ON_OTHER}
 )
+_BLOCKED_ONLY: frozenset[LoopState] = frozenset({LoopState.BLOCKED_ON_YOU})
+_WAITING_ONLY: frozenset[LoopState] = frozenset({LoopState.WAITING_ON_OTHER})
+
+# Plan-step ``person`` tokens that refer to the asker rather than a teammate.
+# The caller's endpoint is pinned by ``_personalize``, so these add nothing and
+# must never leak into an endpoint filter as literal strings.
+_SELF_PERSON_TOKENS: frozenset[str] = frozenset(
+    {"me", "myself", "i", "self", "user", "the user", "you", "the tracked user"}
+)
+
+# Shape of a literal Slack member id (real ids like U0BFZDE289W and the U_NAME
+# style used across the test workspace). A plan-step person that neither
+# resolves via the person port nor matches this shape is discarded.
+_SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9_]{3,}$")
+
+# Words in the *user's message* that genuinely ask for an oldest/newest pick.
+# A plan-step selector is honored only when one of these is present.
+_SELECTOR_CUES: tuple[str, ...] = (
+    "oldest",
+    "newest",
+    "latest",
+    "most recent",
+    "first",
+    "stalest",
+    "last",
+)
 
 
 def _detect_loop_states(text: str) -> frozenset[LoopState]:
@@ -556,6 +585,7 @@ class ConversationalAgent:
         now: Callable[[], str] = utc_now_iso,
         resolve_person: Optional[Callable[[str], Optional[PersonId]]] = None,
         planner: Optional[Planner] = None,
+        user_id: Optional[UserId] = None,
     ) -> None:
         self._graph = graph
         self._action = action
@@ -563,8 +593,66 @@ class ConversationalAgent:
         self._now = now
         self._resolve_person = resolve_person or (lambda token: token)
         self._planner = planner
+        # The tracked user, when known. With third-party loops in the graph
+        # (edges between two *other* people, feeding the workspace map and
+        # deadlock intelligence), every personal query/command must scope to
+        # loops the user is a party to — "what am I waiting on?" must never
+        # list someone else's loop. ``None`` (the default) keeps the original
+        # unscoped behaviour for tests and single-user graphs.
+        self._user_id = user_id
         # Per-user pending send-as-user confirmation (Req 12.6). At most one per user.
         self._pending: dict[UserId, _PendingConfirmation] = {}
+
+    def _scoped(
+        self, rows: list[Obligation], user: Optional[UserId] = None
+    ) -> list[Obligation]:
+        """Restrict query results to loops ``user`` is a party to.
+
+        Scoping is armed by constructing the agent with a ``user_id`` (personal
+        mode); the *target* is whoever is asking — every workspace member gets
+        their own answers — falling back to the configured user. No-op when no
+        ``user_id`` was configured. Applied post-query because a single
+        :class:`ObligationFilter` cannot express the per-state endpoint OR
+        ("owes me" for waiting, "I owe" for blocked) across a mixed-state
+        query.
+        """
+        if self._user_id is None:
+            return rows
+        target = user or self._user_id
+        return [
+            o
+            for o in rows
+            if target in (o.owes_person_id, o.owed_person_id)
+        ]
+
+    def _personalize(
+        self, filt: ObligationFilter, user: Optional[UserId] = None
+    ) -> ObligationFilter:
+        """Re-anchor a direction filter to the asking member's edge endpoints.
+
+        Loop_State labels are stored relative to the tracked user, so for any
+        other caller "blocked on me" (I owe) and "waiting on others" (someone
+        owes me) cannot be answered from the label — exactly like the App Home
+        selectors, the state filter widens to both open states and the caller is
+        pinned to the owing / owed endpoint. Armed only in personal mode; a
+        mixed-state filter carries no direction claim and passes through.
+        """
+        if self._user_id is None:
+            return filt
+        target = user or self._user_id
+        if filt.loop_states == _BLOCKED_ONLY:
+            return replace(
+                filt,
+                loop_states=_ACTIVE_STATES,
+                owes_person_id=filt.owes_person_id or target,
+            )
+        if filt.loop_states == _WAITING_ONLY:
+            return replace(
+                filt,
+                loop_states=_ACTIVE_STATES,
+                owed_person_id=filt.owed_person_id or target,
+            )
+        return filt
 
     # ------------------------------------------------------------------
     # Unified entry point — dispatch query vs command vs unmappable
@@ -601,7 +689,7 @@ class ConversationalAgent:
         if isinstance(parsed, ParsedCommand):
             return self._route_command(user, parsed, trace)
         if isinstance(parsed, ParsedQuery):
-            return self._run_query(parsed, trace)
+            return self._run_query(parsed, trace, user=user)
         return self._unsupported_reply(trace)
 
     # ------------------------------------------------------------------
@@ -633,6 +721,11 @@ class ConversationalAgent:
 
         summary = f": {plan.summary}" if plan.summary else ""
         trace.add(TRACE_PLANNER, f"plan {len(plan.steps)} step(s){summary}")
+        logger.info(
+            "assistant plan for %s: %s",
+            user,
+            [(s.tool, s.args) for s in plan.steps],
+        )
         return self._execute_plan(user, text, plan, trace)
 
     def _fallback_to_parser(
@@ -675,10 +768,14 @@ class ConversationalAgent:
             trace.add(TRACE_PLANNER, detail)
 
             if tool == TOOL_QUERY_GRAPH:
-                filt = self._filter_from_step(step, base_filter)
+                filt = self._personalize(self._filter_from_step(step, base_filter), user)
                 trace.add(TRACE_GRAPH, "query")
-                candidates = _sort_oldest_first(self._graph.query(self._apply_now(filt)))
-                candidates = self._apply_selector(candidates, self._selector_from_step(step))
+                candidates = _sort_oldest_first(
+                    self._scoped(self._graph.query(self._apply_now(filt)), user)
+                )
+                candidates = self._apply_selector(
+                    candidates, self._grounded_selector(step, text)
+                )
                 queried = True
 
             elif tool == TOOL_VERIFY_PR:
@@ -694,11 +791,16 @@ class ConversationalAgent:
                 if not queried:
                     trace.add(TRACE_GRAPH, "query")
                     candidates = _sort_oldest_first(
-                        self._graph.query(self._apply_now(base_filter))
+                        self._scoped(
+                            self._graph.query(
+                                self._apply_now(self._personalize(base_filter, user))
+                            ),
+                            user,
+                        )
                     )
                     queried = True
                 # Let a per-step selector collapse an ambiguous set.
-                selector = self._selector_from_step(step)
+                selector = self._grounded_selector(step, text)
                 if selector is not None:
                     candidates = self._apply_selector(candidates, selector)
 
@@ -728,7 +830,14 @@ class ConversationalAgent:
         # No terminal action ran — the plan was a pure read. Answer from candidates.
         if not queried:
             trace.add(TRACE_GRAPH, "query")
-            candidates = _sort_oldest_first(self._graph.query(self._apply_now(base_filter)))
+            candidates = _sort_oldest_first(
+                self._scoped(
+                    self._graph.query(
+                        self._apply_now(self._personalize(base_filter, user))
+                    ),
+                    user,
+                )
+            )
         return self._query_reply_from(candidates, trace)
 
     def _execute_action_step(
@@ -810,6 +919,10 @@ class ConversationalAgent:
         args = step.args or {}
         loop_state = args.get("loop_state") or args.get("state")
         person = args.get("person") or args.get("from") or args.get("to")
+        # A self-referential person ("me", "the user") is the asker, whose endpoint
+        # _personalize pins — as a literal string it would match no edge at all.
+        if isinstance(person, str) and person.strip().lower() in _SELF_PERSON_TOKENS:
+            person = None
         min_age_days = args.get("min_age_days") or args.get("min_age")
 
         states = base.loop_states
@@ -827,11 +940,21 @@ class ConversationalAgent:
         owes = base.owes_person_id
         owed = base.owed_person_id
         if isinstance(person, str) and person.strip():
-            token = self._resolve_person(person.strip()) or person.strip()
-            if states == frozenset({LoopState.WAITING_ON_OTHER}):
-                owes = token
-            elif states == frozenset({LoopState.BLOCKED_ON_YOU}):
-                owed = token
+            raw = person.strip()
+            resolved = self._resolve_person(raw)
+            token: Optional[str] = None
+            if resolved and resolved != raw:
+                token = resolved
+            elif _SLACK_ID_RE.match(raw):
+                token = raw
+            # An unresolvable name would make the endpoint filter match nothing
+            # at all — dropping it degrades to "all matching loops", never to a
+            # silently empty answer.
+            if token is not None:
+                if states == _WAITING_ONLY:
+                    owes = token
+                elif states == _BLOCKED_ONLY:
+                    owed = token
 
         return ObligationFilter(
             loop_states=states,
@@ -846,6 +969,23 @@ class ConversationalAgent:
             min_age_seconds=min_age_seconds,
             max_age_seconds=base.max_age_seconds,
         )
+
+    @classmethod
+    def _grounded_selector(cls, step: PlanStep, text: str) -> Optional[Selector]:
+        """A step's selector, honored only when the user's own words ask for one.
+
+        Planners sometimes over-specify — emitting ``selector="newest"`` for a
+        plain listing question — which silently collapses the answer to a single
+        loop, or worse, aims an action at the wrong one. The user's message is
+        the ground truth: no oldest/newest cue in it, no selector.
+        """
+        selector = cls._selector_from_step(step)
+        if selector is None:
+            return None
+        lowered = text.lower()
+        if any(cue in lowered for cue in _SELECTOR_CUES):
+            return selector
+        return None
 
     @staticmethod
     def _selector_from_step(step: PlanStep) -> Optional[Selector]:
@@ -922,22 +1062,25 @@ class ConversationalAgent:
         """
         parsed = self._parser(text)
         if isinstance(parsed, ParsedQuery):
-            return self._run_query(parsed)
+            return self._run_query(parsed, user=user)
         if isinstance(parsed, ParsedCommand):
             # Text understood as a command answered through the query door: still
             # answer with the obligations its target criteria match.
-            return self._run_query(ParsedQuery(filter=parsed.filter))
+            return self._run_query(ParsedQuery(filter=parsed.filter), user=user)
         return self._unsupported_reply()
 
     def _run_query(
-        self, parsed: ParsedQuery, trace: Optional[ToolUseTrace] = None
+        self,
+        parsed: ParsedQuery,
+        trace: Optional[ToolUseTrace] = None,
+        user: Optional[UserId] = None,
     ) -> AssistantReply:
         """Execute a parsed query and build the reply + trace (Req 12.1, 12.2, 12.5)."""
         trace = trace if trace is not None else ToolUseTrace()
 
-        filt = self._apply_now(parsed.filter)
+        filt = self._apply_now(self._personalize(parsed.filter, user))
         trace.add(TRACE_GRAPH, "query")
-        matches = _sort_oldest_first(self._graph.query(filt))
+        matches = _sort_oldest_first(self._scoped(self._graph.query(filt), user))
 
         # Req 12.2: zero matches → explicit no-match message.
         if not matches:
@@ -980,7 +1123,7 @@ class ConversationalAgent:
 
         # Resolve the candidate target Obligation(s) from the graph.
         trace.add(TRACE_GRAPH, "query")
-        candidates = self._resolve_candidates(parsed)
+        candidates = self._resolve_candidates(parsed, user)
 
         # Zero candidates: nothing to act on (Req 12.2-style no-match for a command).
         if not candidates:
@@ -1015,15 +1158,17 @@ class ConversationalAgent:
             return self._route_snooze(target, parsed.duration, trace)
         return self._route_close(target, trace)
 
-    def _resolve_candidates(self, parsed: ParsedCommand) -> list[Obligation]:
+    def _resolve_candidates(
+        self, parsed: ParsedCommand, user: Optional[UserId] = None
+    ) -> list[Obligation]:
         """Resolve a command's target candidate set, applying any selector.
 
         Applies the parsed filter, sorts oldest→newest, then — when a selector is
         present — collapses to the single oldest/newest Obligation so an explicit
         "the oldest one" never disambiguates (Req 12.4).
         """
-        filt = self._apply_now(parsed.filter)
-        matches = _sort_oldest_first(self._graph.query(filt))
+        filt = self._apply_now(self._personalize(parsed.filter, user))
+        matches = _sort_oldest_first(self._scoped(self._graph.query(filt), user))
         if not matches:
             return []
         if parsed.selector is Selector.OLDEST:

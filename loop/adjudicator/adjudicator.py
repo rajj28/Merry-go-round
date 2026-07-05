@@ -1,7 +1,7 @@
-"""The Adjudicator — Opus 4.8 "whose court is the ball in?" reasoning (task 5.1).
+"""The Adjudicator — the smart tier 4.8 "whose court is the ball in?" reasoning (task 5.1).
 
 This module implements the Adjudicator (Reason / Agent 2). It takes a
-``CandidateMessage`` forwarded by the Watcher, asks Opus 4.8 whether the candidate
+``CandidateMessage`` forwarded by the Watcher, asks the smart tier 4.8 whether the candidate
 is a *real* open loop that involves the user and in which direction, assigns a
 Confidence_Score, and writes the resulting ``Obligation`` to the shared Obligation
 Graph (design.md → "Adjudicator (Reason)"; Req 3.1, 3.2, 3.3).
@@ -11,16 +11,16 @@ It builds strictly on the frozen day-1 contracts:
   * store contract — :mod:`loop.graph.store` (``ObligationGraph``, ``Result``)
   * watcher input — :class:`loop.watcher.rts_contract.CandidateMessage`
 
-Two-tier funnel (design.md → "Two-tier LLM strategy"): the Watcher (Haiku, high
-recall) produces candidates; the Adjudicator (Opus, high precision) is the final
-filter. This module realizes the Opus stage.
+Two-tier funnel (design.md → "Two-tier LLM strategy"): the Watcher (fast-tier, high
+recall) produces candidates; the Adjudicator (the smart tier, high precision) is the final
+filter. This module realizes the smart-tier stage.
 
 Injectable reasoning client (a thin port)
 ------------------------------------------
-The Opus call is reached through an injected callable (:class:`LoopReasoningClient`)
+The the smart tier call is reached through an injected callable (:class:`LoopReasoningClient`)
 so the Adjudicator never hard-depends on a live Anthropic call and is trivially
-mockable in tests. ``build_opus_reasoning_client`` wires the real client from
-``loop.config`` (ANTHROPIC_API_KEY + Opus model) **lazily** — the ``anthropic``
+mockable in tests. ``build_smart_reasoning_client`` wires the real client from
+``loop.config`` (ANTHROPIC_API_KEY + the smart tier model) **lazily** — the ``anthropic``
 package and the network connection are imported/opened *inside* the returned
 callable, so merely importing this module never touches the network.
 
@@ -40,7 +40,7 @@ Task 5.1 implemented the **happy-path write**. Task 5.2 completes the Adjudicato
 
   * Discard with no graph change for not-a-loop / no-user / unknown-direction
     candidates (Req 3.4) — the structural seam, now verified and solidified.
-  * Opus error/unreachable (Req 3.7): the Opus port call is wrapped so any raised
+  * smart-tier error/unreachable (Req 3.7): the smart-tier port call is wrapped so any raised
     exception yields an ``ERROR`` outcome with **no** graph write and a recorded
     error indication (``AdjudicationResult.error_message``).
   * Quiet-by-default eligibility (Req 3.5, 3.6): after a successful write the
@@ -79,7 +79,7 @@ _OBLIGATION_NAMESPACE = uuid.UUID("6f9b1d8e-0e2a-4d3c-9a1b-1d6c0a4f7e21")
 
 
 class Direction(str, Enum):
-    """Which party owes the response, as judged by Opus (maps to Loop_State, Req 3.2).
+    """Which party owes the response, as judged by the smart tier (maps to Loop_State, Req 3.2).
 
     USER_OWES   the user owes the reply       -> LoopState.BLOCKED_ON_YOU
     OTHER_OWES  the other party owes the reply -> LoopState.WAITING_ON_OTHER
@@ -92,8 +92,8 @@ class Direction(str, Enum):
 
 
 @dataclass(frozen=True)
-class OpusAdjudication:
-    """The structured judgement the Opus reasoning port returns for a candidate.
+class SmartAdjudication:
+    """The structured judgement the smart-tier reasoning port returns for a candidate.
 
     This is the port's *output contract* — a pure value object, free of any
     Anthropic types — so the real client and any test double agree on the shape:
@@ -103,6 +103,13 @@ class OpusAdjudication:
       direction       whose court the ball is in (Req 3.2)
       confidence      certainty in [0.0, 1.0] (clamped on use, Req 3.3)
       subject_summary one-line summary of the loop for the UI
+      owes_id/owed_id explicit party extraction (both-or-nothing). When the
+                      client names both edge endpoints — e.g. from the author id
+                      and an ``<@U…>`` mention — the Adjudicator uses them
+                      directly, which is what lets **third-party** loops (Priya
+                      owes Marco) enter the graph and feed the workspace map,
+                      chains, and deadlock detection. When either is ``None``
+                      the legacy user-centric direction mapping applies.
     """
 
     is_loop: bool
@@ -110,20 +117,22 @@ class OpusAdjudication:
     direction: Direction
     confidence: float
     subject_summary: str = ""
+    owes_id: Optional[PersonId] = None
+    owed_id: Optional[PersonId] = None
 
 
 class LoopReasoningClient(Protocol):
-    """The thin port the Adjudicator calls to obtain an Opus judgement.
+    """The thin port the Adjudicator calls to obtain a smart-tier judgement.
 
     Implementations take the candidate plus context (the tracked ``user_id``) and
-    return a structured :class:`OpusAdjudication`. Keeping this a narrow callable
+    return a structured :class:`SmartAdjudication`. Keeping this a narrow callable
     makes the Adjudicator trivially mockable and keeps the live Anthropic call out
-    of import time (see :func:`build_opus_reasoning_client`).
+    of import time (see :func:`build_smart_reasoning_client`).
     """
 
     def __call__(
         self, candidate: CandidateMessage, *, user_id: UserId
-    ) -> OpusAdjudication:
+    ) -> SmartAdjudication:
         ...
 
 
@@ -133,7 +142,7 @@ class AdjudicationOutcome(str, Enum):
     CREATED    a new Obligation was written to the graph (happy path).
     UPDATED    an existing Obligation (same source message) was updated.
     DISCARDED  no graph change — not a loop / no user / unknown direction (Req 3.4).
-    ERROR      a graph write failed (persist failure) or Opus errored (task 5.2).
+    ERROR      a graph write failed (persist failure) or smart-tier errored (task 5.2).
     """
 
     CREATED = "created"
@@ -151,7 +160,7 @@ class AdjudicationResult:
     On the ERROR path ``outcome`` is ERROR and the graph is left unchanged:
       * a graph persist failure populates ``error`` with the store's :class:`GraphError`
         (Req 1.8);
-      * an Opus error/unreachable populates ``error_message`` with the recorded error
+      * a smart-tier error/unreachable populates ``error_message`` with the recorded error
         indication (Req 3.7).
     ``surfacing_eligible`` reports quiet-by-default eligibility on a successful write —
     ``confidence_score >= current threshold`` (Req 3.5, 3.6); it stays ``None`` on
@@ -162,7 +171,7 @@ class AdjudicationResult:
     obligation: Optional[Obligation] = None
     discard_reason: Optional[str] = None
     error: Optional[GraphError] = None
-    error_message: Optional[str] = None  # Opus error indication (Req 3.7)
+    error_message: Optional[str] = None  # smart-tier error indication (Req 3.7)
     surfacing_eligible: Optional[bool] = None  # confidence >= threshold (Req 3.5/3.6)
 
 
@@ -173,6 +182,37 @@ _DIRECTION_TO_STATE: dict[Direction, LoopState] = {
     Direction.USER_OWES: LoopState.BLOCKED_ON_YOU,
     Direction.OTHER_OWES: LoopState.WAITING_ON_OTHER,
 }
+
+
+def _clean_person_id(value: Any) -> Optional[PersonId]:
+    """Normalize a judged party id: strip mention syntax, reject junk.
+
+    Accepts a bare Slack id (``U0AB12CD3``), a mention (``<@U0AB12CD3>`` or
+    ``<@U0AB12CD3|display>``), or an ``@``-prefixed id. Anything empty,
+    non-string, or not id-shaped yields ``None`` so the caller falls back to the
+    legacy direction mapping instead of writing a garbage endpoint.
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().strip("<>").lstrip("@").split("|", 1)[0].strip()
+    if not cleaned or not cleaned.replace("_", "").isalnum():
+        return None
+    return cleaned
+
+
+def _explicit_endpoints(
+    judgement: SmartAdjudication,
+) -> Optional[tuple[PersonId, PersonId]]:
+    """The judgement's explicit ``(owes, owed)`` endpoints, or ``None``.
+
+    Both-or-nothing: a judgement that names only one party gives no usable edge,
+    so it falls back to the legacy user-centric mapping.
+    """
+    owes = _clean_person_id(judgement.owes_id)
+    owed = _clean_person_id(judgement.owed_id)
+    if owes is None or owed is None:
+        return None
+    return owes, owed
 
 
 def _slack_ts_to_iso(ts: str) -> Optional[str]:
@@ -196,11 +236,11 @@ def _obligation_id_for(channel: str, ts: str) -> str:
 
 
 class Adjudicator:
-    """Opus-backed reasoning over Watcher candidates (Req 3.1–3.3).
+    """the smart tier-backed reasoning over Watcher candidates (Req 3.1–3.3).
 
-    Construct with an injected :class:`LoopReasoningClient` (the Opus port) and the
+    Construct with an injected :class:`LoopReasoningClient` (the smart-tier port) and the
     shared :class:`ObligationGraph` store. ``adjudicate`` runs one candidate through
-    Opus and, on a real user-involving loop, writes the directed Obligation.
+    the smart tier and, on a real user-involving loop, writes the directed Obligation.
     """
 
     def __init__(self, client: LoopReasoningClient, graph: ObligationGraph) -> None:
@@ -212,7 +252,7 @@ class Adjudicator:
     ) -> AdjudicationResult:
         """Adjudicate one candidate and, on a real loop, upsert the Obligation.
 
-        Happy path (Req 3.1–3.3): Opus reports a real loop involving the user with a
+        Happy path (Req 3.1–3.3): the smart tier reports a real loop involving the user with a
         known direction. We map direction -> Loop_State (Req 3.2), build the directed
         Obligation, clamp the Confidence_Score into [0.0, 1.0] (Req 3.3), and upsert
         it to the graph, returning CREATED or UPDATED with the stored value and the
@@ -221,18 +261,18 @@ class Adjudicator:
         Discard (Req 3.4): not-a-loop / no-user / unknown-direction → DISCARDED with a
         reason and no graph write.
 
-        Opus error (Req 3.7): if the Opus port raises, return ERROR with the graph
+        smart-tier error (Req 3.7): if the smart-tier port raises, return ERROR with the graph
         left unchanged and the error indication recorded; no Obligation is created.
         """
-        # --- Opus error/unreachable (Req 3.7): wrap the port call --------------
+        # --- smart-tier error/unreachable (Req 3.7): wrap the port call --------------
         try:
             judgement = self._client(candidate, user_id=user_id)
-        except Exception as exc:  # noqa: BLE001 — any Opus failure is recorded, not raised
+        except Exception as exc:  # noqa: BLE001 — any the smart tier failure is recorded, not raised
             # Discard the candidate, leave the graph unchanged, record the error
             # indication. No Obligation is created.
             return AdjudicationResult(
                 AdjudicationOutcome.ERROR,
-                error_message=f"opus adjudication failed: {exc!r}",
+                error_message=f"smart-tier adjudication failed: {exc!r}",
             )
 
         # --- discard guard (Req 3.4): no graph change on these branches --------
@@ -240,20 +280,42 @@ class Adjudicator:
             return AdjudicationResult(
                 AdjudicationOutcome.DISCARDED, discard_reason="not a loop"
             )
-        if not judgement.involves_user:
-            return AdjudicationResult(
-                AdjudicationOutcome.DISCARDED, discard_reason="does not involve user"
-            )
-        if judgement.direction not in _DIRECTION_TO_STATE:
-            return AdjudicationResult(
-                AdjudicationOutcome.DISCARDED, discard_reason="unknown direction"
-            )
 
-        # --- happy path: build the directed Obligation and write it -------------
-        loop_state = _DIRECTION_TO_STATE[judgement.direction]
-        owes_id, owed_id = self._edge_endpoints(
-            judgement.direction, user_id=user_id, other_id=candidate.author_id
-        )
+        explicit = _explicit_endpoints(judgement)
+        if explicit is not None:
+            # Explicit party extraction: the edge endpoints came straight from
+            # the judgement, so loops between two *other* people are written
+            # too — they feed the workspace map, chains, and deadlock rings.
+            # State stays user-centric: BLOCKED_ON_YOU iff the user owes;
+            # everything else (including third-party edges) is an open loop
+            # the user is not on the hook for. Personal surfaces scope by
+            # endpoint, so a third-party edge never lands on someone's list.
+            owes_id, owed_id = explicit
+            if owes_id == owed_id:
+                return AdjudicationResult(
+                    AdjudicationOutcome.DISCARDED,
+                    discard_reason="self-loop endpoints",
+                )
+            loop_state = (
+                LoopState.BLOCKED_ON_YOU
+                if owes_id == user_id
+                else LoopState.WAITING_ON_OTHER
+            )
+        else:
+            # Legacy user-centric mapping: the counterparty is the author.
+            if not judgement.involves_user:
+                return AdjudicationResult(
+                    AdjudicationOutcome.DISCARDED,
+                    discard_reason="does not involve user",
+                )
+            if judgement.direction not in _DIRECTION_TO_STATE:
+                return AdjudicationResult(
+                    AdjudicationOutcome.DISCARDED, discard_reason="unknown direction"
+                )
+            loop_state = _DIRECTION_TO_STATE[judgement.direction]
+            owes_id, owed_id = self._edge_endpoints(
+                judgement.direction, user_id=user_id, other_id=candidate.author_id
+            )
 
         obligation_id = _obligation_id_for(
             candidate.channel_id, candidate.message_ts
@@ -319,7 +381,7 @@ class Adjudicator:
         return other_id, user_id
 
 
-def build_opus_reasoning_client(settings: Any | None = None) -> LoopReasoningClient:
+def build_smart_reasoning_client(settings: Any | None = None) -> LoopReasoningClient:
     """Wire a real smart-tier ``LoopReasoningClient`` from config.
 
     Provider-agnostic: routes through :func:`loop.llm.chat` at the **smart tier**
@@ -346,19 +408,32 @@ def build_opus_reasoning_client(settings: Any | None = None) -> LoopReasoningCli
 
     def _client(
         candidate: CandidateMessage, *, user_id: UserId
-    ) -> OpusAdjudication:
+    ) -> SmartAdjudication:
         import json
 
         from loop.llm import chat
 
         prompt = (
-            "You decide whose court the ball is in for a Slack message.\n"
+            "You analyze a Slack message for an 'open loop': one person owing "
+            "another a concrete response, deliverable, or decision.\n"
             f"Tracked user id: {user_id}\n"
             f"Message author id: {candidate.author_id}\n"
             f"Channel: {candidate.channel_id}\n"
             f"Message: {candidate.text}\n\n"
-            "Respond ONLY with JSON: {\"is_loop\": bool, \"involves_user\": bool, "
-            "\"direction\": \"user_owes\"|\"other_owes\"|\"unknown\", "
+            "Identify the two parties of the loop as Slack user ids:\n"
+            "- owes_id: who owes the next action (must deliver/reply)\n"
+            "- owed_id: who is waiting on it\n"
+            "Use ids visible in the message (<@U...> mentions), the author id, "
+            "or the tracked user id. The parties do NOT need to include the "
+            "tracked user — a loop between two other people counts. An ask "
+            "('can you review X?') means the person asked owes the author; a "
+            "promise ('I'll send X tomorrow') means the author owes the "
+            "recipient. If you cannot identify both parties, use null.\n\n"
+            "subject_summary: a short imperative description of the deliverable "
+            "itself (e.g. 'Send load-test results by EOD') — never refer to "
+            "'the author', 'the user', or 'the mentioned user'.\n\n"
+            "Respond ONLY with JSON: {\"is_loop\": bool, "
+            "\"owes_id\": string|null, \"owed_id\": string|null, "
             "\"confidence\": float 0..1, \"subject_summary\": string}."
         )
         text = chat(
@@ -369,12 +444,26 @@ def build_opus_reasoning_client(settings: Any | None = None) -> LoopReasoningCli
             max_tokens=512,
         )
         data = json.loads(text)
-        return OpusAdjudication(
+        owes = _clean_person_id(data.get("owes_id"))
+        owed = _clean_person_id(data.get("owed_id"))
+        # Derive the legacy user-centric fields from the extracted parties so
+        # the dataclass stays coherent for both the endpoint path and (when a
+        # party is missing) the direction-mapping fallback.
+        involves_user = user_id in (owes, owed) if owes and owed else False
+        if owes and owed and owes == user_id:
+            direction = Direction.USER_OWES
+        elif owes and owed and owed == user_id:
+            direction = Direction.OTHER_OWES
+        else:
+            direction = Direction.UNKNOWN
+        return SmartAdjudication(
             is_loop=bool(data["is_loop"]),
-            involves_user=bool(data["involves_user"]),
-            direction=Direction(data.get("direction", "unknown")),
+            involves_user=involves_user,
+            direction=direction,
             confidence=float(data.get("confidence", 0.0)),
             subject_summary=str(data.get("subject_summary", "")),
+            owes_id=owes,
+            owed_id=owed,
         )
 
     return _client
@@ -382,10 +471,10 @@ def build_opus_reasoning_client(settings: Any | None = None) -> LoopReasoningCli
 
 __all__ = [
     "Direction",
-    "OpusAdjudication",
+    "SmartAdjudication",
     "LoopReasoningClient",
     "AdjudicationOutcome",
     "AdjudicationResult",
     "Adjudicator",
-    "build_opus_reasoning_client",
+    "build_smart_reasoning_client",
 ]

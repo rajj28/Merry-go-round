@@ -15,7 +15,7 @@ an injectable :data:`~loop.conversational.planner.Planner`):
       JSON robustly (a property over randomized plans, offline via an injected chat).
 
 The agent runs against the *real* in-memory Obligation Graph and *real* Action
-Agent; only the outward "send as user" port, the Verifier, and Claude drafting are
+Agent; only the outward "send as user" port, the Verifier, and LLM drafting are
 mocked so behaviour is deterministic. The planner is an injected test double, so no
 LLM/network is involved.
 
@@ -156,7 +156,7 @@ def _action_agent(
         verifier=verifier,  # type: ignore[arg-type]
         now=clock.iso,
         slack_send_as_user=sender,
-        claude_draft=lambda obligation: "Friendly nudge text.",
+        draft=lambda obligation: "Friendly nudge text.",
     )
 
 
@@ -245,6 +245,53 @@ def test_planned_multistep_executes_in_order_and_gates_send_as_user() -> None:
     confirm = convo.confirm(USER)
     assert confirm.kind is ReplyKind.ACTION_DONE
     assert sender.count == 1
+
+
+def test_hallucinated_selector_never_collapses_a_plain_listing_answer() -> None:
+    """A step selector the user never asked for is ignored (Req 12.5 grounding).
+
+    Planners sometimes over-specify (selector="newest" for "who is blocked on
+    me?"), which would silently hide every loop but one. The selector is honored
+    only when the user's own words carry an oldest/newest cue.
+    """
+    graph = _graph()
+    old_ts = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc).isoformat()
+    graph.upsert(_obligation("OBL_OLD", ts=old_ts, summary="Send the numbers"))
+    graph.upsert(_obligation("OBL_NEW", summary="Review the deck"))
+    sender = _RecordingSender()
+    verifier = _FakeVerifier(VerificationResult.UNRESOLVED)
+    clock = _Clock(datetime(2025, 2, 1, 9, 0, 0, tzinfo=timezone.utc))
+    action = _action_agent(graph, verifier=verifier, sender=sender, clock=clock)
+
+    plan = Plan(
+        summary="list blocked loops",
+        steps=(
+            PlanStep(
+                TOOL_QUERY_GRAPH,
+                # Everything here is hallucinated: a selector nobody asked for and
+                # a person token that resolves to no one. Neither may narrow the answer.
+                {"selector": "newest", "person": "the requester", "min_age_days": 0},
+                "fetch blocked loops",
+            ),
+        ),
+    )
+    convo = ConversationalAgent(
+        graph,
+        action,
+        parser=_active_query_parser(),
+        now=clock.iso,
+        planner=_planner_returning(plan),
+    )
+
+    # No oldest/newest cue in the question → both loops are listed.
+    listing = convo.handle(USER, "who is blocked on me right now?")
+    assert "Send the numbers" in listing.text
+    assert "Review the deck" in listing.text
+
+    # The user genuinely asking for the newest → the selector is honored.
+    newest = convo.handle(USER, "what is my newest loop?")
+    assert "Review the deck" in newest.text
+    assert "Send the numbers" not in newest.text
 
 
 def test_planned_snooze_executes_and_persists() -> None:

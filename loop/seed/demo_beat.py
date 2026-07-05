@@ -134,7 +134,7 @@ class SeededPrMergeBeat:
         self.workspace = workspace or SeededWorkspace()
         self.pr_client = pr_client or SeededPullRequestStatusClient()
         self.verifier = Verifier(self.pr_client)
-        # The real Action Agent over the real seeded graph. No Slack/Claude ports are
+        # The real Action Agent over the real seeded graph. No Slack/the LLM ports are
         # needed: auto-close is fully autonomous (no send-as-user), so the lazy
         # defaults are never reached on this path.
         self.action = ActionAgent(self.workspace.graph, self.verifier, now=now)

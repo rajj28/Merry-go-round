@@ -172,7 +172,7 @@ class Obligation(SQLModel, table=True):
     )
     source_msg_channel: str = Field(description="Slack channel id of the source message")
     source_msg_ts: str = Field(description="Slack ts of the source message")
-    subject_summary: str = Field(description="Claude summary of the loop")
+    subject_summary: str = Field(description="LLM summary of the loop")
 
     # --- surfacing control --------------------------------------------------
     dismissed: bool = Field(

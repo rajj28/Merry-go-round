@@ -11,7 +11,7 @@ from __future__ import annotations
 from loop.adjudicator.adjudicator import (
     Adjudicator,
     Direction,
-    OpusAdjudication,
+    SmartAdjudication,
 )
 from loop.graph.models import LoopState
 from loop.graph.sqlite_store import IN_MEMORY, SqliteObligationGraph
@@ -32,8 +32,8 @@ def _candidate(ts: str = "1700000000.0001", author: str = "U_OTHER") -> Candidat
     )
 
 
-def _opus_user_owes(_candidate, *, user_id):  # noqa: ANN001
-    return OpusAdjudication(
+def _smart_user_owes(_candidate, *, user_id):  # noqa: ANN001
+    return SmartAdjudication(
         is_loop=True,
         involves_user=True,
         direction=Direction.USER_OWES,
@@ -44,7 +44,7 @@ def _opus_user_owes(_candidate, *, user_id):  # noqa: ANN001
 
 def test_enqueue_then_drain_adjudicates_and_writes_graph():
     graph = SqliteObligationGraph(IN_MEMORY)
-    adjudicator = Adjudicator(_opus_user_owes, graph)
+    adjudicator = Adjudicator(_smart_user_owes, graph)
     queue = AdjudicationQueue(adjudicator, USER)
 
     # The Watcher's forward seam is queue.enqueue.
@@ -62,7 +62,7 @@ def test_enqueue_then_drain_adjudicates_and_writes_graph():
 
 def test_drain_returns_result_per_candidate_and_is_empty_when_drained():
     graph = SqliteObligationGraph(IN_MEMORY)
-    queue = AdjudicationQueue(Adjudicator(_opus_user_owes, graph), USER)
+    queue = AdjudicationQueue(Adjudicator(_smart_user_owes, graph), USER)
 
     queue.enqueue(_candidate(ts="1700000000.0001"))
     queue.enqueue(_candidate(ts="1700000000.0002"))
@@ -79,7 +79,7 @@ def test_drain_survives_a_crashing_adjudicator():
         def adjudicate(self, candidate, *, user_id):  # noqa: ANN001
             raise RuntimeError("boom")
 
-    queue = AdjudicationQueue(Boom(_opus_user_owes, graph), USER)
+    queue = AdjudicationQueue(Boom(_smart_user_owes, graph), USER)
     queue.enqueue(_candidate())
     # The crash is contained: drain completes and yields no result for the bad one.
     assert queue.drain() == []
@@ -89,7 +89,7 @@ def test_on_result_callback_fires_after_each_adjudication():
     graph = SqliteObligationGraph(IN_MEMORY)
     seen = []
     queue = AdjudicationQueue(
-        Adjudicator(_opus_user_owes, graph), USER, on_result=seen.append
+        Adjudicator(_smart_user_owes, graph), USER, on_result=seen.append
     )
     queue.enqueue(_candidate())
     queue.drain()

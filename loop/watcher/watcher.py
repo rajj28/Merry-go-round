@@ -20,14 +20,14 @@ Scope realized **here**:
     channel (Req 2.2, task 4.2). It turns a Slack message event into a
     :class:`CandidateMessage` and runs it through the **same** dedup → classify →
     forward pipeline as ``run_sweep`` via the shared :meth:`Watcher._handle_candidate`.
-  * Haiku 4.5 high-recall classification + Adjudicator forwarding (task 4.3). The
-    injected ``classify`` port (a :class:`HaikuClassifyClient`, candidate → bool) is
+  * Fast-tier high-recall classification + Adjudicator forwarding (task 4.3). The
+    injected ``classify`` port (a :class:`FastClassifyClient`, candidate → bool) is
     the binary potential-loop classifier (Req 2.3); the Watcher forwards **every**
     positive candidate including low-certainty ones to the Adjudicator with its
-    source message ref (Req 2.4, 2.5). When the classifier **raises** (Haiku
+    source message ref (Req 2.4, 2.5). When the classifier **raises** (fast-tier
     failure), the candidate is excluded from forwarding and is **not** marked
     processed, so the next sweep that retrieves it re-evaluates it (Req 2.8).
-    :func:`build_haiku_classify_client` wires the real Haiku client from
+    :func:`build_fast_classify_client` wires the real fast-tier client from
     :mod:`loop.config` lazily (network-free import).
 
 Deliberately **out of scope here** (left as clean seams for later tasks):
@@ -88,20 +88,20 @@ class RtsClient(Protocol):
         ...
 
 
-# A classify seam = the injectable Haiku classification port (task 4.3). Given a
+# A classify seam = the injectable fast-tier classification port (task 4.3). Given a
 # candidate it returns True to keep it (potential open loop, forward to Adjudicator)
-# or False to drop it (Req 2.3). It MAY **raise** to signal a Haiku failure: the
+# or False to drop it (Req 2.3). It MAY **raise** to signal a fast-tier failure: the
 # Watcher then excludes that candidate without marking it processed, so the next
 # sweep that retrieves it re-evaluates it (Req 2.8). The default is pass-through so
-# the Watcher works (and forwards every de-duplicated candidate) without Haiku wired.
+# the Watcher works (and forwards every de-duplicated candidate) without fast-tier wired.
 ClassifyFn = Callable[[CandidateMessage], bool]
 
 
-class HaikuClassifyClient(Protocol):
-    """The thin port the Watcher calls to obtain a Haiku binary classification.
+class FastClassifyClient(Protocol):
+    """The thin port the Watcher calls to obtain a fast-tier binary classification.
 
     Implementations take a :class:`CandidateMessage` and return ``True`` when the
-    Haiku_Model judges it a *potential* open loop (keep, forward to the Adjudicator)
+    fast-tier model judges it a *potential* open loop (keep, forward to the Adjudicator)
     or ``False`` when it is clearly not (drop) — tuned for **high recall**, so any
     plausible loop including low-certainty ones returns ``True`` (Req 2.3, 2.5).
     Implementations MAY **raise** on a model failure (timeout / error); the Watcher
@@ -121,7 +121,7 @@ ForwardFn = Callable[[CandidateMessage], None]
 
 
 def _accept_all(_candidate: CandidateMessage) -> bool:
-    """Default :class:`ClassifyFn`: pass every candidate through (Haiku replaces it)."""
+    """Default :class:`ClassifyFn`: pass every candidate through (the fast tier replaces it)."""
     return True
 
 
@@ -137,10 +137,10 @@ class CandidateOutcome(str, Enum):
                       seam (the Adjudicator) with its source message ref (Req 2.4/2.5).
     DUPLICATE         its ``(channel, ts)`` source ref already maps to an Obligation
                       (or was already seen this pass) → skipped (dedup, Req 2.9).
-    DROPPED           Haiku classified it as *not* an open loop → not forwarded.
+    DROPPED           the fast-tier classifier classified it as *not* an open loop → not forwarded.
     OUT_OF_SCOPE      its ``channel_id`` is not in the configured watch-channel
                       allow-list → not forwarded (live-detection scoping).
-    CLASSIFY_FAILED   Haiku raised → excluded from forwarding and **not** marked
+    CLASSIFY_FAILED   the fast-tier classifier raised → excluded from forwarding and **not** marked
                       processed, so the next sweep re-evaluates it (Req 2.8).
     """
 
@@ -208,9 +208,9 @@ class Watcher:
 
     Construct with the shared :class:`ObligationGraph` (for dedup) and an injected
     :class:`RtsClient` port (so the RTS call is mockable). ``classify`` is the
-    injectable Haiku classification port (a :class:`HaikuClassifyClient`); its
-    default is pass-through, and :func:`build_haiku_classify_client` wires the real
-    Haiku-backed one (task 4.3). ``forward`` is the Adjudicator hand-off seam (task
+    injectable fast-tier classification port (a :class:`FastClassifyClient`); its
+    default is pass-through, and :func:`build_fast_classify_client` wires the real
+    fast-tier-backed one (task 4.3). ``forward`` is the Adjudicator hand-off seam (task
     5); its default is a no-op. ``interval_seconds`` is read from
     :mod:`loop.config` when not supplied and is validated to be ≤ 60s (Req 2.1);
     APScheduler wiring of the cadence is task 17. ``watch_channels`` optionally
@@ -250,6 +250,14 @@ class Watcher:
         self._interval_seconds = interval_seconds
         # Empty/None allow-list = no restriction (watch the whole workspace).
         self._watch_channels = set(watch_channels) if watch_channels else None
+        # Source refs already judged this session — fast-tier-dropped or
+        # forwarded. The graph-based dedup only covers candidates that *became*
+        # Obligations; without this memory, every ≤60s sweep re-spends LLM
+        # tokens re-classifying the same chatter and re-adjudicating messages
+        # the Adjudicator already discarded (a real quota drain on free tiers).
+        # CLASSIFY_FAILED is deliberately never recorded so a fast-tier outage
+        # still re-evaluates on the next sweep (Req 2.8).
+        self._session_refs: set[tuple[str, str]] = set()
 
     @property
     def interval_seconds(self) -> int:
@@ -272,9 +280,9 @@ class Watcher:
              creating no obligations (Req 2.6).
           3. For each candidate, skip it if its ``(channel_id, message_ts)`` source
              reference already corresponds to an existing Obligation (dedup, Req 2.9).
-          4. Apply the ``classify`` seam (the Haiku high-recall classifier; Req 2.3)
+          4. Apply the ``classify`` seam (the fast-tier high-recall classifier; Req 2.3)
              and forward each kept candidate via the ``forward`` seam (the Adjudicator
-             hand-off, no-op until task 5). A Haiku failure on a candidate excludes it
+             hand-off, no-op until task 5). A fast-tier failure on a candidate excludes it
              without marking it processed, so the next sweep re-evaluates it (Req 2.8).
              Steps (3)+(4) run through the shared :meth:`_handle_candidate` helper,
              which ``on_message_event`` also uses.
@@ -303,7 +311,7 @@ class Watcher:
                 duplicates_skipped += 1
             elif outcome is CandidateOutcome.FORWARDED:
                 new_candidates.append(candidate)
-            # DROPPED (Haiku said not-a-loop) and CLASSIFY_FAILED (Haiku raised,
+            # DROPPED (fast-tier said not-a-loop) and CLASSIFY_FAILED (the fast-tier classifier raised,
             # re-evaluate next sweep, Req 2.8) contribute no new candidate.
 
         return SweepResult(
@@ -326,9 +334,9 @@ class Watcher:
 
           * a message whose ``(channel, ts)`` already maps to an Obligation is
             skipped (dedup, Req 2.9);
-          * a Haiku-positive message is forwarded to the Adjudicator with its source
+          * a fast-tier-positive message is forwarded to the Adjudicator with its source
             reference (Req 2.4, 2.5);
-          * a Haiku failure excludes the message and leaves it unprocessed, so a
+          * a fast-tier failure excludes the message and leaves it unprocessed, so a
             later sweep that retrieves it re-evaluates it (Req 2.8).
 
         Returns the :class:`CandidateOutcome` for the message (handy for handlers and
@@ -345,7 +353,7 @@ class Watcher:
     def _handle_candidate(
         self, candidate: CandidateMessage, existing_refs: set[tuple[str, str]]
     ) -> CandidateOutcome:
-        """Run one candidate through dedup → Haiku classify → forward (Req 2.3–2.9).
+        """Run one candidate through dedup → fast-tier classify → forward (Req 2.3–2.9).
 
         The single place both the periodic sweep and the live message path share, so
         their behaviour cannot drift:
@@ -356,9 +364,10 @@ class Watcher:
              allow-list this step is a no-op (backward compatible).
           1. **Dedup (Req 2.9).** If the candidate's ``(channel, ts)`` is already in
              ``existing_refs`` (an existing Obligation, or a candidate already kept in
-             this same pass), skip it → ``DUPLICATE``.
-          2. **Haiku classify (Req 2.3).** Call the injected classify port. If it
-             **raises** (Haiku failure), exclude the candidate and DO NOT add it to
+             this same pass) or in the session memory (already dropped/forwarded this
+             session), skip it → ``DUPLICATE``.
+          2. **fast-tier classify (Req 2.3).** Call the injected classify port. If it
+             **raises** (fast-tier failure), exclude the candidate and DO NOT add it to
              ``existing_refs`` — it is left unprocessed so the next sweep re-evaluates
              it → ``CLASSIFY_FAILED`` (Req 2.8). A ``False`` result drops it →
              ``DROPPED``.
@@ -375,27 +384,35 @@ class Watcher:
             return CandidateOutcome.OUT_OF_SCOPE
 
         # --- (1) dedup by source message reference (Req 2.9) -----------------
-        if candidate.dedup_key in existing_refs:
+        # Both the graph-backed refs (candidates that became Obligations) and
+        # the session memory (already dropped / already forwarded) count.
+        if candidate.dedup_key in existing_refs or candidate.dedup_key in self._session_refs:
             return CandidateOutcome.DUPLICATE
 
-        # --- (2) Haiku classify; a raise = exclude + re-evaluate (Req 2.8) ---
+        # --- (2) fast-tier classify; a raise = exclude + re-evaluate (Req 2.8) ---
         try:
             keep = self._classify(candidate)
-        except Exception as exc:  # noqa: BLE001 — Haiku failure → exclude, retry next sweep.
+        except Exception as exc:  # noqa: BLE001 — fast-tier failure → exclude, retry next sweep.
             logger.warning(
-                "Haiku classify failed for %s; re-evaluating next sweep: %s",
+                "fast-tier classify failed for %s; re-evaluating next sweep: %s",
                 candidate.dedup_key,
                 exc,
             )
             return CandidateOutcome.CLASSIFY_FAILED
 
         if not keep:
+            # A definitive negative: remember it so later sweeps never re-spend
+            # fast-tier tokens re-judging the same message.
+            self._session_refs.add(candidate.dedup_key)
             return CandidateOutcome.DROPPED
 
         # --- (3) forward every positive incl. low-certainty (Req 2.4, 2.5) ---
         self._forward(candidate)
-        # Guard against duplicates *within the same pass* too.
+        # Guard against duplicates *within the same pass* too — and across the
+        # session: if the Adjudicator discards this candidate (no graph write),
+        # the next sweep must not re-forward it into smart-tier reasoning.
         existing_refs.add(candidate.dedup_key)
+        self._session_refs.add(candidate.dedup_key)
         return CandidateOutcome.FORWARDED
 
     # ------------------------------------------------------------------ #
@@ -465,11 +482,11 @@ def build_rts_client(
 
 
 # --------------------------------------------------------------------------- #
-# Real Haiku classifier wiring (lazy; importing this module never touches network)
+# Real fast-tier classifier wiring (lazy; importing this module never touches network)
 # --------------------------------------------------------------------------- #
-# High-recall instruction for the Haiku binary classifier (Req 2.3, 2.5): when in
-# doubt, say YES. The Adjudicator (Opus) is the precision filter downstream.
-HAIKU_CLASSIFY_PROMPT = (
+# High-recall instruction for the fast-tier binary classifier (Req 2.3, 2.5): when in
+# doubt, say YES. The Adjudicator (the smart tier) is the precision filter downstream.
+FAST_CLASSIFY_PROMPT = (
     "You are a high-recall first-pass filter for a personal Slack obligation agent.\n"
     "Decide whether the following message could plausibly be an OPEN LOOP — someone "
     "waiting on a reply, blocked on someone, an unanswered question, or a promise to "
@@ -480,8 +497,8 @@ HAIKU_CLASSIFY_PROMPT = (
 )
 
 
-def build_haiku_classify_client(settings: Any | None = None) -> HaikuClassifyClient:
-    """Wire a real fast-tier :class:`HaikuClassifyClient` from config (task 4.3).
+def build_fast_classify_client(settings: Any | None = None) -> FastClassifyClient:
+    """Wire a real fast-tier :class:`FastClassifyClient` from config (task 4.3).
 
     Provider-agnostic: routes through :func:`loop.llm.chat` at the **fast tier**,
     which by default is the configured Groq model (``llama-3.1-8b-instant``) and
@@ -511,7 +528,7 @@ def build_haiku_classify_client(settings: Any | None = None) -> HaikuClassifyCli
         from loop.llm import chat
 
         text = chat(
-            [{"role": "user", "content": HAIKU_CLASSIFY_PROMPT.format(text=candidate.text)}],
+            [{"role": "user", "content": FAST_CLASSIFY_PROMPT.format(text=candidate.text)}],
             tier="fast",
             settings=settings,
             max_tokens=8,
@@ -527,13 +544,13 @@ __all__ = [
     "SweepResult",
     "RtsClient",
     "ClassifyFn",
-    "HaikuClassifyClient",
+    "FastClassifyClient",
     "ForwardFn",
     "CandidateOutcome",
     "candidate_from_message_event",
     "build_rts_client",
-    "build_haiku_classify_client",
-    "HAIKU_CLASSIFY_PROMPT",
+    "build_fast_classify_client",
+    "FAST_CLASSIFY_PROMPT",
     "DEFAULT_OPEN_LOOP_QUERY",
     "RTS_API_METHOD",
     "MAX_SWEEP_INTERVAL_SECONDS",

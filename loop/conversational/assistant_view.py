@@ -152,16 +152,24 @@ def _trace_block(reply: AssistantReply) -> Optional[dict[str, Any]]:
 def _counterparty_person(
     obligation: Obligation, user_id: Optional[PersonId]
 ) -> Optional[PersonId]:
-    """The person shown on an obligation row: the counterparty for this user.
+    """The person shown on an obligation row: the *other* party for this viewer.
 
-    ``blocked-on-you`` → the owed person; ``waiting-on-other`` → the owing person;
-    otherwise (e.g. a healed match) the structurally-resolved other party.
+    Endpoint-first: when the viewer sits on the edge, the counterparty is simply
+    the opposite endpoint — stored state labels are relative to the tracked user,
+    not the viewer, so label-based resolution would show a member their own face.
+    The label mapping remains for edges the viewer is not on (``blocked-on-you``
+    → the owed person; ``waiting-on-other`` → the owing person) and healed rows
+    fall back to the structurally-resolved other party.
     """
+    owes = obligation.owes_person_id or None
+    owed = obligation.owed_person_id or None
+    if user_id and user_id in (owes, owed) and owes != owed:
+        return resolved_person_id(obligation, user_id)
     state = obligation.loop_state
-    if state == LoopState.BLOCKED_ON_YOU and obligation.owed_person_id:
-        return obligation.owed_person_id
-    if state == LoopState.WAITING_ON_OTHER and obligation.owes_person_id:
-        return obligation.owes_person_id
+    if state == LoopState.BLOCKED_ON_YOU and owed:
+        return owed
+    if state == LoopState.WAITING_ON_OTHER and owes:
+        return owes
     return resolved_person_id(obligation, user_id)
 
 

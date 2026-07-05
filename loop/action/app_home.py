@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Collection, Mapping, Optional, Union
 
 from loop.graph.models import ClosureKind, LoopState, Obligation, PersonId
 from loop.graph.store import ObligationFilter, ObligationGraph
@@ -67,6 +67,21 @@ BLOCKED_SECTION_TITLE = "Blocked on you"
 WAITING_SECTION_TITLE = "Waiting on others"
 HEALED_SECTION_TITLE = "Recently auto-closed"
 
+# First-run onboarding (rendered only when the graph has tracked *nothing* yet
+# — a brand-new install). Distinct from the caught-up zero state: once any loop
+# has ever been tracked, the dashboard speaks for itself and these disappear.
+FIRST_RUN_TEXT = (
+    "*Loop is watching now.* It detects open loops automatically — who's "
+    "waiting on you, and who you're waiting on — straight from your everyday "
+    "messages. No tags, no commands, no forms."
+)
+FIRST_RUN_STEPS_TEXT = (
+    "Every sweep (≤60s) reads new activity via Slack's Real-Time Search. "
+    "High-confidence loops appear here — and when the work is verifiably "
+    "done, like a pull request merging, Loop closes the loop itself."
+)
+FIRST_RUN_TRY_TEXT = "Try the Assistant pane: ask *\"Who's blocked on me?\"*"
+
 BLOCKED_EMPTY_TEXT = "_Nobody's blocked on you right now. Nice._"
 WAITING_EMPTY_TEXT = "_You're not waiting on anyone right now._"
 HEALED_EMPTY_TEXT = "_No loops have been auto-closed yet._"
@@ -96,6 +111,23 @@ ACTION_REVIEW_BLOCKED = "app_home_review_blocked"
 # opens the Nudge composer modal for that loop — a fast "nudge anyone" entry point
 # shown only when more than one person is waiting.
 ACTION_QUICK_NUDGE = "app_home_quick_nudge"
+
+# ---------------------------------------------------------------------------
+# Deadlock (cycle) section — the workspace-graph intelligence layer (opt-in).
+# Rendered only when the caller passes break plans, so the classic three-section
+# layout (and every test pinned to it) is unchanged by default.
+# ---------------------------------------------------------------------------
+DEADLOCK_SECTION_TITLE = "Deadlocks — circular blocks"
+DEADLOCK_EXPLAIN_TEXT = (
+    "_Everyone in this ring is waiting on someone else, so no amount of "
+    "individual nudging can fix it — one edge has to move first._"
+)
+# Sends the cycle-break plan's drafted first move; value carries the break
+# obligation id (the app resolves the full plan it computed at publish time).
+ACTION_CYCLE_SEND = "app_home_cycle_send"
+# Demo-mode-only control: reload the seeded demo org (timestamps rebased) so a
+# judge can reset the whole experience in one click, self-serve.
+ACTION_DEMO_RESET = "app_home_demo_reset"
 
 
 class AgingState(str, Enum):
@@ -245,29 +277,64 @@ def _sorted_newest_first(obligations: list[Obligation]) -> list[Obligation]:
     )
 
 
-def blocked_on_you_rows(graph: ObligationGraph, now: Optional[TimeLike]) -> list[Obligation]:
+# Both live loop states: an edge stored as either is "open". Person-scoped
+# selectors filter by endpoint over this set because the stored label is
+# relative to the tracked user while any workspace member may be the viewer.
+_OPEN_LOOP_STATES = frozenset({LoopState.BLOCKED_ON_YOU, LoopState.WAITING_ON_OTHER})
+
+
+def blocked_on_you_rows(
+    graph: ObligationGraph,
+    now: Optional[TimeLike],
+    user_id: Optional[PersonId] = None,
+) -> list[Obligation]:
     """Surfaced ``blocked-on-you`` obligations, oldest→newest (Req 6.3).
 
     ``surfaced_only=True`` defers to the store's single surfacing gate (not
-    dismissed, not snoozed, confidence ≥ threshold, active state).
+    dismissed, not snoozed, confidence ≥ threshold, active state). When
+    ``user_id`` is given the rows are scoped to edges where the user is the
+    *owing* endpoint — across BOTH open states, because the stored state is
+    anchored to the workspace's tracked user while any member may be viewing:
+    "blocked on you" is an endpoint fact, not a stored label. ``None`` keeps
+    the unscoped (state-labelled) behaviour.
     """
     rows = graph.query(
         ObligationFilter(
-            loop_states=frozenset({LoopState.BLOCKED_ON_YOU}),
+            loop_states=(
+                _OPEN_LOOP_STATES
+                if user_id
+                else frozenset({LoopState.BLOCKED_ON_YOU})
+            ),
             surfaced_only=True,
             now=_now_iso(now),
+            owes_person_id=user_id,
         )
     )
     return _sorted_oldest_first(rows)
 
 
-def waiting_on_other_rows(graph: ObligationGraph, now: Optional[TimeLike]) -> list[Obligation]:
-    """Surfaced ``waiting-on-other`` obligations, oldest→newest (Req 6.4)."""
+def waiting_on_other_rows(
+    graph: ObligationGraph,
+    now: Optional[TimeLike],
+    user_id: Optional[PersonId] = None,
+) -> list[Obligation]:
+    """Surfaced ``waiting-on-other`` obligations, oldest→newest (Req 6.4).
+
+    When ``user_id`` is given, scoped to edges where the user is the *owed*
+    endpoint — across BOTH open states (see :func:`blocked_on_you_rows`) — so
+    any member's waiting list is theirs alone and third-party loops (two other
+    people) never appear. ``None`` keeps the unscoped behaviour.
+    """
     rows = graph.query(
         ObligationFilter(
-            loop_states=frozenset({LoopState.WAITING_ON_OTHER}),
+            loop_states=(
+                _OPEN_LOOP_STATES
+                if user_id
+                else frozenset({LoopState.WAITING_ON_OTHER})
+            ),
             surfaced_only=True,
             now=_now_iso(now),
+            owed_person_id=user_id,
         )
     )
     return _sorted_oldest_first(rows)
@@ -364,9 +431,13 @@ def _resolved_sort_key(obligation: Obligation, user_id: Optional[PersonId]) -> s
     return resolved_person_id(obligation, user_id) or ""
 
 
-def hero_count(graph: ObligationGraph, now: Optional[TimeLike]) -> int:
+def hero_count(
+    graph: ObligationGraph,
+    now: Optional[TimeLike],
+    user_id: Optional[PersonId] = None,
+) -> int:
     """The hero-banner count: surfaced ``blocked-on-you`` obligations (Req 6.1, 6.7)."""
-    return len(blocked_on_you_rows(graph, now))
+    return len(blocked_on_you_rows(graph, now, user_id))
 
 
 def hero_text(count: int) -> str:
@@ -623,10 +694,16 @@ def _active_section_blocks(
     ``actions`` block. ``person_of`` resolves the row's counterparty so the avatar maps
     to the right person.
     """
-    blocks: list[dict[str, Any]] = [_header(title), {"type": "divider"}]
+    blocks: list[dict[str, Any]] = [_header(title)]
     if not rows:
+        blocks.append({"type": "divider"})
         blocks.append(_mrkdwn_section(empty_text))
         return blocks
+    # One quiet summary line under the header: how many, and how stale the
+    # worst is (rows arrive oldest→newest, so rows[0] is the oldest).
+    oldest = aging_chip(rows[0], now)
+    blocks.append(_context(f"{len(rows)} open · oldest {oldest.age_text}"))
+    blocks.append({"type": "divider"})
     for o in rows:
         chip = aging_chip(o, now)
         section = _mrkdwn_section(row_text(o, chip))
@@ -865,6 +942,578 @@ def footer_text(blocked_count: int, waiting_count: int, healed_count: int) -> st
     )
 
 
+def _ring_display(person_id: PersonId, names: Optional[Mapping[str, str]]) -> str:
+    """Display name for ring/chain copy, falling back to the raw Slack id.
+
+    Distinct from :func:`_display_name` (which returns ``None`` when unknown so
+    card titles can fall back to the subject): ring copy must always name every
+    party, so the id itself is the fallback.
+    """
+    return _display_name(person_id, names) or person_id
+
+
+def deadlock_ring_text(
+    people: tuple[PersonId, ...], names: Optional[Mapping[str, str]] = None
+) -> str:
+    """The ring rendered as ``A → B → C → A`` with display names."""
+    ring = [_ring_display(p, names) for p in people]
+    return " → ".join((*ring, ring[0]))
+
+
+# Slack-palette colors for the rendered graph visuals.
+_GRAPH_BREAK_COLOR = "#E01E5A"   # Slack red — deadlock edges / the edge to break
+_GRAPH_EDGE_COLOR = "#616061"    # Slack gray — ordinary open loops
+_GRAPH_NODE_FILL = "#F8F8F8"
+_GRAPH_USER_FILL = "#4A154B"     # Slack aubergine — the tracked user's node
+_GRAPH_HEAL_COLOR = "#007A5A"    # Slack green — autonomy / healing
+
+# The workspace map renders at most this many edges (highest downstream impact
+# first) so a very large org degrades to "the loops that matter most".
+MAP_MAX_EDGES = 20
+
+MAP_CAPTION = (
+    "The live map — arrows point from who owes to who's waiting. "
+    "Heavier lines hold up more people; red is a deadlock."
+)
+
+
+def workspace_map_url(
+    edges: list[Obligation],
+    user_id: Optional[PersonId] = None,
+    *,
+    names: Optional[Mapping[str, str]] = None,
+    cycle_edge_ids: frozenset = frozenset(),
+    chain_report: Any = None,
+) -> Optional[str]:
+    """The whole workspace's obligation graph as one rendered PNG.
+
+    People are nodes (the tracked user in Slack aubergine, labeled "You"),
+    open loops are arrows from who owes to who's waiting, deadlock edges are
+    red, and line weight scales with downstream impact — one glance shows the
+    live state of the org. Pure, deterministic URL construction; returns None
+    when there is nothing to draw.
+    """
+    from urllib.parse import quote
+
+    if not edges:
+        return None
+
+    def _impact(edge: Obligation) -> int:
+        return chain_report.impact(edge.obligation_id) if chain_report else 1
+
+    ranked = sorted(edges, key=lambda e: (-_impact(e), e.obligation_id))[:MAP_MAX_EDGES]
+
+    def _label(person: PersonId) -> str:
+        if user_id is not None and person == user_id:
+            return "You"
+        return _ring_display(person, names).replace('"', "'")
+
+    lines = []
+    for edge in ranked:
+        a, b = _label(edge.owes_person_id), _label(edge.owed_person_id)
+        weight = 1.0 + 0.4 * min(max(_impact(edge) - 1, 0), 4)
+        color = (
+            _GRAPH_BREAK_COLOR
+            if edge.obligation_id in cycle_edge_ids
+            else _GRAPH_EDGE_COLOR
+        )
+        lines.append(f'"{a}" -> "{b}" [color="{color}" penwidth={weight:.1f}]')
+
+    user_decl = (
+        f'"You" [fillcolor="{_GRAPH_USER_FILL}" fontcolor=white];'
+        if user_id is not None
+        and any(user_id in (e.owes_person_id, e.owed_person_id) for e in ranked)
+        else ""
+    )
+    dot = (
+        "digraph {"
+        "layout=neato; overlap=false; splines=true; bgcolor=white; pad=0.25;"
+        'node [shape=circle style=filled fillcolor="' + _GRAPH_NODE_FILL + '" '
+        'color="#1D1C1D" fontname="Helvetica" fontsize=10 fixedsize=true width=0.85];'
+        "edge [arrowsize=0.7];"
+        + user_decl
+        + "; ".join(lines)
+        + "}"
+    )
+    return (
+        "https://quickchart.io/graphviz?format=png&width=680&height=420&graph="
+        + quote(dot, safe="")
+    )
+
+
+def heal_trend_url(
+    healed: list[Obligation], now: Optional[TimeLike], days: int = 14
+) -> Optional[str]:
+    """A small sparkline of autonomous closures per day over the last ``days``.
+
+    Real evidence of the agent working over time, rendered as a chart rather
+    than claimed in prose. Returns None when the window is empty so the strip
+    never shows a flatline.
+    """
+    from urllib.parse import quote
+
+    now_dt = _parse_iso_utc(_now_iso(now))
+    counts = [0] * days
+    for o in healed:
+        if not o.closure_timestamp:
+            continue
+        try:
+            age_days = (now_dt - _parse_iso_utc(o.closure_timestamp)).days
+        except ValueError:
+            continue
+        if 0 <= age_days < days:
+            counts[days - 1 - age_days] += 1
+    if not any(counts):
+        return None
+    import json
+
+    config = {
+        "type": "sparkline",
+        "data": {
+            "datasets": [
+                {
+                    "data": counts,
+                    "borderColor": _GRAPH_HEAL_COLOR,
+                    "fill": True,
+                    "backgroundColor": "rgba(0,122,90,0.18)",
+                }
+            ]
+        },
+    }
+    return (
+        "https://quickchart.io/chart?w=160&h=48&c="
+        + quote(json.dumps(config, separators=(",", ":")), safe="")
+    )
+
+
+def first_run_diagram_url() -> str:
+    """The agent pipeline (Perceive → Reason → Verify → Act, tuned by Learn)
+    as a small rendered diagram for the first-run onboarding."""
+    from urllib.parse import quote
+
+    dot = (
+        "digraph {"
+        "rankdir=LR; bgcolor=white; pad=0.25;"
+        'node [shape=box style="rounded,filled" fillcolor="' + _GRAPH_NODE_FILL + '" '
+        'color="' + _GRAPH_USER_FILL + '" fontname="Helvetica" fontsize=11 height=0.55];'
+        'edge [color="#616061" arrowsize=0.7 fontname="Helvetica" fontsize=9];'
+        '"Perceive\\nRTS sweep" -> "Reason\\nwhose court?" -> '
+        '"Verify\\nGitHub MCP" -> "Act\\nnudge · auto-close";'
+        '"Act\\nnudge · auto-close" -> "Learn\\nyour feedback" '
+        '[style=dashed color="' + _GRAPH_HEAL_COLOR + '"];'
+        '"Learn\\nyour feedback" -> "Perceive\\nRTS sweep" '
+        '[style=dashed color="' + _GRAPH_HEAL_COLOR + '" label=" tunes"];'
+        "}"
+    )
+    return (
+        "https://quickchart.io/graphviz?format=png&width=640&height=140&graph="
+        + quote(dot, safe="")
+    )
+
+
+def next_best_action_blocks(
+    blocked: list[Obligation],
+    chain_report: Any,
+    now: Optional[TimeLike],
+    *,
+    names: Optional[Mapping[str, str]] = None,
+    avatars: Optional[Mapping[str, str]] = None,
+) -> list[dict[str, Any]]:
+    """The agent's single prioritized recommendation, pinned above the lists.
+
+    Picks the blocked-on-you loop with the highest (downstream impact, age)
+    and says *why* it is first. Rendered only when prioritization adds signal
+    — with a single weightless loop the list already speaks for itself.
+    """
+    if not blocked or chain_report is None:
+        return []
+
+    def _priority(o: Obligation) -> tuple[int, float]:
+        age = (_coerce_now(now) - _parse_iso_utc(o.last_touch_timestamp)).total_seconds()
+        return (chain_report.impact(o.obligation_id), age)
+
+    top = max(blocked, key=_priority)
+    weight = chain_report.impact(top.obligation_id)
+    if len(blocked) < 2 and weight < 2:
+        return []
+
+    chip = aging_chip(top, now)
+    person = top.owed_person_id
+    who = _ring_display(person, names) if person else "someone"
+    line = f"*Next best move:* {top.subject_summary}\n{chip.text} · {who} is waiting"
+    if weight >= 2:
+        line += f" · clearing it unblocks *{weight} people*"
+    section = _mrkdwn_section(line)
+    accessory = _avatar_accessory(person, avatars)
+    if accessory is not None:
+        section["accessory"] = accessory
+    return [
+        section,
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "text": {"type": "plain_text", "text": "Nudge now", "emoji": True},
+                    "action_id": ACTION_NUDGE,
+                    "value": top.obligation_id,
+                }
+            ],
+        },
+    ]
+
+
+def deadlock_graph_url(
+    plan: Any, names: Optional[Mapping[str, str]] = None
+) -> str:
+    """A rendered PNG of the deadlock ring (QuickChart Graphviz, circular layout).
+
+    Turns the ring into an actual picture — people as nodes, obligations as
+    arrows, the Cycle Breaker's chosen first move highlighted in Slack red and
+    labeled "start here". Pure URL construction (deterministic for a given
+    plan); Slack's image proxy fetches and caches the render, the same
+    external-image pattern the seeded avatars already use. If the image is
+    unreachable the card still carries the full ring in text.
+    """
+    from urllib.parse import quote
+
+    lines = []
+    for edge in plan.cycle.edges:
+        a = _ring_display(edge.owes_person_id, names).replace('"', "'")
+        b = _ring_display(edge.owed_person_id, names).replace('"', "'")
+        if edge.obligation_id == plan.break_obligation_id:
+            attrs = (
+                f'color="{_GRAPH_BREAK_COLOR}" penwidth=2.4 '
+                f'label="  start here" fontcolor="{_GRAPH_BREAK_COLOR}" fontsize=10'
+            )
+        else:
+            attrs = f'color="{_GRAPH_EDGE_COLOR}"'
+        lines.append(f'"{a}" -> "{b}" [{attrs}]')
+    dot = (
+        "digraph {"
+        "layout=circo; bgcolor=white; pad=0.3;"
+        'node [shape=circle style=filled fillcolor="' + _GRAPH_NODE_FILL + '" '
+        'color="#1D1C1D" fontname="Helvetica" fontsize=11 fixedsize=true width=0.95];'
+        'edge [fontname="Helvetica" arrowsize=0.8];'
+        + "; ".join(lines)
+        + "}"
+    )
+    return (
+        "https://quickchart.io/graphviz?format=png&width=420&height=340&graph="
+        + quote(dot, safe="")
+    )
+
+
+def _deadlock_blocks(
+    break_plans: Any,
+    *,
+    names: Optional[Mapping[str, str]] = None,
+    rich: bool = False,  # here: "wrap each ring in a container block"
+) -> list[dict[str, Any]]:
+    """The Deadlocks section: one card per detected ring, with its break plan.
+
+    Each card shows the ring, the smart-tier (or heuristic-fallback) rationale
+    for *where* to break it, and two actions: send the drafted first move
+    (:data:`ACTION_CYCLE_SEND`) or dismiss the break edge via the standard
+    dismiss flow (:data:`ACTION_DISMISS` — a dismissed edge leaves the graph's
+    active set, which dissolves the ring). ``rich=True`` groups each ring's
+    blocks into a ``container`` so multiple deadlocks read as distinct cards.
+    Pure: renders only what it is given.
+    """
+    blocks: list[dict[str, Any]] = [_header(DEADLOCK_SECTION_TITLE)]
+    blocks.append(_context(DEADLOCK_EXPLAIN_TEXT))
+    for plan in break_plans:
+        ring = deadlock_ring_text(plan.cycle.people, names)
+        edge = plan.break_edge
+        plan_blocks: list[dict[str, Any]] = []
+        plan_blocks.append(
+            {
+                "type": "image",
+                "image_url": deadlock_graph_url(plan, names),
+                "alt_text": f"Deadlock: {ring}",
+                "title": {"type": "plain_text", "text": ring, "emoji": False},
+            }
+        )
+        plan_blocks.append(
+            _mrkdwn_section(
+                f"*Break here first:* {edge.subject_summary}\n"
+                f"{_ring_display(edge.owes_person_id, names)} → "
+                f"{_ring_display(edge.owed_person_id, names)}"
+            )
+        )
+        plan_blocks.append(
+            _context(f"Why this edge: {plan.rationale} · _chosen by {plan.source}_")
+        )
+        plan_blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Draft the first move",
+                            "emoji": True,
+                        },
+                        "action_id": ACTION_CYCLE_SEND,
+                        "value": edge.obligation_id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Not a deadlock",
+                            "emoji": True,
+                        },
+                        "action_id": ACTION_DISMISS,
+                        "value": edge.obligation_id,
+                        "confirm": {
+                            "title": {
+                                "type": "plain_text",
+                                "text": "Not a deadlock?",
+                            },
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    "This dismisses the highlighted edge — the "
+                                    "ring dissolves and Loop learns from your call."
+                                ),
+                            },
+                            "confirm": {"type": "plain_text", "text": "Dismiss it"},
+                            "deny": {"type": "plain_text", "text": "Keep"},
+                        },
+                    },
+                ],
+            }
+        )
+        if rich:
+            blocks.append(_container(f"Deadlock: {ring}", plan_blocks))
+        else:
+            blocks.extend(plan_blocks)
+    return blocks
+
+
+def chain_pressure_text(
+    chain_report: Any,
+    blocked: list[Obligation],
+    *,
+    names: Optional[Mapping[str, str]] = None,
+) -> Optional[str]:
+    """The one-line chain alert for the user's heaviest blocked-on-you edge.
+
+    Downstream impact turns a flat reminder into a prioritized one: when one of
+    the loops blocked on the user is transitively holding up two or more
+    people, say so. Returns None when no surfaced edge carries that weight, so
+    the quiet default stays quiet.
+    """
+    if not blocked:
+        return None
+    heaviest = max(blocked, key=lambda o: chain_report.impact(o.obligation_id))
+    weight = chain_report.impact(heaviest.obligation_id)
+    if weight < 2:
+        return None
+    behind = chain_report.downstream.get(heaviest.obligation_id, frozenset())
+    sample = ", ".join(_ring_display(p, names) for p in sorted(behind)[:3])
+    return (
+        f"*{heaviest.subject_summary}* is holding up *{weight} people* "
+        f"downstream ({sample}) — clearing it unblocks the whole chain."
+    )
+
+
+def impact_stats_text(healed: list[Obligation], now: Optional[TimeLike]) -> str:
+    """The impact strip: what Loop's autonomy has already closed for the user.
+
+    Computed purely from the Auto-Healed feed rows (autonomous closures,
+    Req 9.1): lifetime count, the last-7-days count by closure timestamp, and
+    the number of distinct people whose wait ended.
+    """
+    now_dt = _parse_iso_utc(_now_iso(now))
+    week = 0
+    people: set[PersonId] = set()
+    for o in healed:
+        people.add(o.owed_person_id)
+        if o.closure_timestamp:
+            try:
+                age = (now_dt - _parse_iso_utc(o.closure_timestamp)).total_seconds()
+                if age <= 7 * 86400:
+                    week += 1
+            except ValueError:
+                pass  # malformed timestamp: still counted in the lifetime total
+    return (
+        f"*Impact:* {len(healed)} loops auto-healed"
+        f" · {week} in the last 7 days · {len(people)} people unblocked"
+    )
+
+
+def learn_text(threshold: float) -> str:
+    """The Learn-visibility footer line: the current tuned surfacing gate."""
+    return (
+        f"Surfacing gate {threshold:.2f} — tuned continuously "
+        "by your Confirm / Dismiss feedback"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rich Block Kit builders — the newest native blocks (data_visualization,
+# data_table, container). All opt-in via ``rich=True`` on the view builder;
+# the app's publish path falls back to the classic view if the workspace
+# rejects any of them, so these can never take the Home tab down.
+# ---------------------------------------------------------------------------
+def _container(
+    title: str,
+    child_blocks: list[dict[str, Any]],
+    *,
+    subtitle: Optional[str] = None,
+    collapsible: bool = False,
+    collapsed: bool = False,
+    width: Optional[str] = None,
+) -> dict[str, Any]:
+    """A ``container`` block (max 10 children — the caller keeps within that)."""
+    block: dict[str, Any] = {
+        "type": "container",
+        "title": {"type": "plain_text", "text": title[:150], "emoji": False},
+        "child_blocks": list(child_blocks)[:10],
+    }
+    if subtitle:
+        block["subtitle"] = {"type": "plain_text", "text": subtitle[:150]}
+    if collapsible:
+        block["is_collapsible"] = True
+        if collapsed:
+            block["default_collapsed"] = True
+    if width:
+        block["width"] = width
+    return block
+
+
+def heal_trend_chart(
+    healed: list[Obligation], now: Optional[TimeLike], days: int = 14
+) -> Optional[dict[str, Any]]:
+    """The auto-heal trend as a native ``data_visualization`` area chart.
+
+    Theme-aware and rendered by Slack itself — no external chart service. Same
+    quiet-default contract as :func:`heal_trend_url`: None when the window is
+    empty. ``days`` stays ≤ 20 (the block's per-series point cap).
+    """
+    from datetime import timedelta
+
+    now_dt = _parse_iso_utc(_now_iso(now))
+    counts = [0] * days
+    for o in healed:
+        if not o.closure_timestamp:
+            continue
+        try:
+            age_days = (now_dt - _parse_iso_utc(o.closure_timestamp)).days
+        except ValueError:
+            continue
+        if 0 <= age_days < days:
+            counts[days - 1 - age_days] += 1
+    if not any(counts):
+        return None
+    labels = [
+        (now_dt - timedelta(days=days - 1 - i)).strftime("%b %d") for i in range(days)
+    ]
+    return {
+        "type": "data_visualization",
+        "title": "Auto-healed · last 14 days",
+        "chart": {
+            "type": "area",
+            "series": [
+                {
+                    "name": "Auto-healed",
+                    "data": [
+                        {"label": labels[i], "value": counts[i]} for i in range(days)
+                    ],
+                }
+            ],
+            "axis_config": {"categories": labels},
+        },
+    }
+
+
+def aging_spread_chart(
+    active_rows: list[Obligation], now: Optional[TimeLike]
+) -> Optional[dict[str, Any]]:
+    """The open-loop age distribution as a native bar chart (fresh/warning/overdue).
+
+    One glance answers "how stale is my debt?" — the visual companion to the
+    per-row aging chips. None when there are no active rows.
+    """
+    if not active_rows:
+        return None
+    buckets = {AgingState.FRESH: 0, AgingState.WARNING: 0, AgingState.OVERDUE: 0}
+    for o in active_rows:
+        buckets[aging_chip(o, now).state] += 1
+    categories = ["Fresh", "Warning", "Overdue"]
+    values = [
+        buckets[AgingState.FRESH],
+        buckets[AgingState.WARNING],
+        buckets[AgingState.OVERDUE],
+    ]
+    return {
+        "type": "data_visualization",
+        "title": "Open loops by age",
+        "chart": {
+            "type": "bar",
+            "series": [
+                {
+                    "name": "Open loops",
+                    "data": [
+                        {"label": categories[i], "value": values[i]} for i in range(3)
+                    ],
+                }
+            ],
+            "axis_config": {"categories": categories},
+        },
+    }
+
+
+def healed_feed_table(
+    healed: list[Obligation],
+    user_id: Optional[PersonId] = None,
+    *,
+    names: Optional[Mapping[str, str]] = None,
+) -> Optional[dict[str, Any]]:
+    """The Auto-Healed feed as a native paginated ``data_table``.
+
+    Person / Loop / Closed / Why as real columns (sortable, 5 per page)
+    instead of stacked text rows. None when the feed is empty — the classic
+    empty-state message renders instead.
+    """
+    if not healed:
+        return None
+    rows: list[list[dict[str, Any]]] = [
+        [
+            {"type": "raw_text", "text": "Person"},
+            {"type": "raw_text", "text": "Loop"},
+            {"type": "raw_text", "text": "Closed"},
+            {"type": "raw_text", "text": "Why"},
+        ]
+    ]
+    for o in healed[:AUTO_HEALED_FEED_CAP]:
+        person = resolved_person_id(o, user_id)
+        who = _ring_display(person, names) if person else "someone (unknown)"
+        try:
+            closed = _parse_iso_utc(o.closure_timestamp or "").strftime("%b %d, %H:%M")
+        except ValueError:
+            closed = "—"
+        rows.append(
+            [
+                {"type": "raw_text", "text": who},
+                {"type": "raw_text", "text": (o.subject_summary or "—")[:80]},
+                {"type": "raw_text", "text": closed},
+                {"type": "raw_text", "text": (o.closure_reason or "—")[:40]},
+            ]
+        )
+    return {
+        "type": "data_table",
+        "caption": "Loops Loop verified as done and closed autonomously",
+        "page_size": 5,
+        "rows": rows,
+    }
+
+
 def build_app_home_view(
     graph: ObligationGraph,
     now: Optional[TimeLike] = None,
@@ -874,6 +1523,14 @@ def build_app_home_view(
     names: Optional[Mapping[str, str]] = None,
     logo_url: str = "",
     style: str = "sections",
+    break_plans: Any = (),
+    chain_report: Any = None,
+    learn_threshold: Optional[float] = None,
+    show_impact: bool = False,
+    demo_controls: bool = False,
+    map_url: Optional[str] = None,
+    rich: bool = False,
+    rich_disabled: Collection[str] = frozenset(),
 ) -> dict[str, Any]:
     """Build the Loop App Home Block Kit ``home`` view (tasks 9.1–9.3, 11.1, Req 6, 9).
 
@@ -916,15 +1573,26 @@ def build_app_home_view(
             ``card`` block: avatar icon + title + subtitle + ≤3 buttons per row). Cards
             are opt-in so the default render is unchanged until a live check confirms
             the ``card`` block renders in the target workspace.
+        rich_disabled: rich block types (``"data_visualization"`` /
+            ``"data_table"`` / ``"container"``) to render in their classic form
+            even when ``rich`` is on. Fed by the live publish layer, which learns
+            at publish time which of the newest blocks the workspace refuses so
+            the rest still upgrade.
 
     Returns:
         A Slack Block Kit home-view dict ``{"type": "home", "blocks": [...]}``.
     """
-    blocked = blocked_on_you_rows(graph, now)
-    waiting = waiting_on_other_rows(graph, now)
+    blocked = blocked_on_you_rows(graph, now, user_id)
+    waiting = waiting_on_other_rows(graph, now, user_id)
     healed = auto_healed_rows(graph, now, user_id)
 
     use_cards = style == "cards"
+
+    def _rich(kind: str) -> bool:
+        """Is this rich block type on? ``rich_disabled`` carries the types the
+        live workspace has refused (learned at publish time), so each rich
+        feature degrades to its classic form independently."""
+        return rich and kind not in rich_disabled
 
     blocks: list[dict[str, Any]] = []
 
@@ -937,7 +1605,91 @@ def build_app_home_view(
     blocks.append(_header(hero_text(len(blocked))))
     # Hero card + scan stats beneath the header (count > 0 only; zero-state stays minimal).
     blocks.extend(_hero_blocks(len(blocked), len(blocked) + len(waiting) + len(healed), now))
+    # First-run onboarding: the graph has tracked nothing yet, so teach what
+    # happens next instead of showing an unexplained "all caught up".
+    if not blocked and not waiting and not healed:
+        blocks.append(_mrkdwn_section(FIRST_RUN_TEXT))
+        blocks.append(
+            {
+                "type": "image",
+                "image_url": first_run_diagram_url(),
+                "alt_text": "Perceive → Reason → Verify → Act, tuned by Learn",
+            }
+        )
+        blocks.append(_context(FIRST_RUN_STEPS_TEXT))
+        blocks.append(_context(FIRST_RUN_TRY_TEXT))
+    # Opt-in intelligence strips under the hero: autonomy impact (with the
+    # auto-heal sparkline as evidence) + chain pressure. The impact strip
+    # stays quiet until there is real impact to report — an all-zero strip is
+    # noise, not reassurance.
+    if show_impact and healed:
+        strip = _mrkdwn_section(impact_stats_text(healed, now))
+        if _rich("data_visualization"):
+            # Native theme-aware chart instead of the image sparkline.
+            blocks.append(strip)
+            chart = heal_trend_chart(healed, now)
+            if chart is not None:
+                blocks.append(chart)
+        else:
+            trend = heal_trend_url(healed, now)
+            if trend:
+                strip["accessory"] = {
+                    "type": "image",
+                    "image_url": trend,
+                    "alt_text": "Auto-heal trend, last 14 days",
+                }
+            blocks.append(strip)
+    if _rich("data_visualization"):
+        spread = aging_spread_chart(blocked + waiting, now)
+        if spread is not None:
+            blocks.append(spread)
+    if chain_report is not None:
+        pressure = chain_pressure_text(chain_report, blocked, names=names)
+        if pressure:
+            blocks.append(_context(pressure))
     blocks.append({"type": "divider"})
+
+    # 1a. The Map — the whole live obligation graph, rendered. One glance =
+    #     the state of the org; everything below is the detail. Rich mode
+    #     wraps it in a collapsible container so the tab stays short but deep.
+    if map_url:
+        map_image = {
+            "type": "image",
+            "image_url": map_url,
+            "alt_text": "The live obligation map",
+            "title": {
+                "type": "plain_text",
+                "text": "Who's waiting on whom — live",
+                "emoji": False,
+            },
+        }
+        if _rich("container"):
+            blocks.append(
+                _container(
+                    "The Map",
+                    [map_image, _context(MAP_CAPTION)],
+                    subtitle="The live obligation graph of the whole workspace",
+                    collapsible=True,
+                    width="wide",
+                )
+            )
+        else:
+            blocks.append(map_image)
+            blocks.append(_context(MAP_CAPTION))
+        blocks.append({"type": "divider"})
+
+    # 1b. Deadlocks — rendered only when the workspace graph actually has rings,
+    #     right at the top: a deadlock outranks any individual loop in urgency.
+    if break_plans:
+        blocks.extend(
+            _deadlock_blocks(break_plans, names=names, rich=_rich("container"))
+        )
+        blocks.append({"type": "divider"})
+
+    # 1c. The agent's single prioritized recommendation.
+    blocks.extend(
+        next_best_action_blocks(blocked, chain_report, now, names=names, avatars=avatars)
+    )
 
     # 2. Blocked-On-You (Req 6.3, 6.5, 6.9).
     if use_cards:
@@ -992,14 +1744,52 @@ def build_app_home_view(
         )
 
     # 4. Recently auto-closed (Req 6.2, 9.1–9.6; full feed — task 11.1).
-    if use_cards:
+    #    Rich mode renders the feed as a native paginated data table; an empty
+    #    feed falls through to the classic renderer for its empty-state copy.
+    healed_table = (
+        healed_feed_table(healed, user_id, names=names)
+        if _rich("data_table")
+        else None
+    )
+    if healed_table is not None:
+        blocks.append(_header(HEALED_SECTION_TITLE))
+        blocks.append(healed_table)
+    elif use_cards:
         blocks.extend(_healed_section_cards(healed, user_id, avatars=avatars, names=names))
     else:
         blocks.extend(_healed_section_blocks(healed, user_id, avatars=avatars))
 
-    # 5. Footer totals (Req 6.6).
+    # 5. Footer totals (Req 6.6). The Learn-visibility line rides as a second
+    #    element of the same context block so the footer stays the last context
+    #    block and its first element stays the totals line (Property 22).
     blocks.append({"type": "divider"})
-    blocks.append(_context(footer_text(len(blocked), len(waiting), len(healed))))
+    footer = _context(footer_text(len(blocked), len(waiting), len(healed)))
+    if learn_threshold is not None:
+        footer["elements"].append(
+            {"type": "mrkdwn", "text": learn_text(learn_threshold)}
+        )
+    blocks.append(footer)
+
+    # 6. Demo-mode-only judge controls (after the footer so the footer stays
+    #    the last *context* block — the Property 22 parse invariant).
+    if demo_controls:
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Reload demo data",
+                            "emoji": True,
+                        },
+                        "action_id": ACTION_DEMO_RESET,
+                        "value": "reset",
+                    }
+                ],
+            }
+        )
 
     return {"type": "home", "blocks": blocks}
 
@@ -1026,6 +1816,7 @@ __all__ = [
     "COMPACT_HEALED_INLINE_CAP",
     "CAROUSEL_CARD_CAP",
     "build_nudge_modal",
+    "build_composer_status_modal",
     "NUDGE_MODAL_CALLBACK",
     "NUDGE_MODAL_INPUT_BLOCK",
     "NUDGE_MODAL_INPUT_ACTION",
@@ -1048,8 +1839,30 @@ __all__ = [
     "ACTION_ROW_OVERFLOW",
     "ACTION_REVIEW_BLOCKED",
     "ACTION_QUICK_NUDGE",
+    "ACTION_CYCLE_SEND",
+    "ACTION_DEMO_RESET",
     "AGING_WARNING_FLOOR_SECONDS",
     "AGING_OVERDUE_FLOOR_SECONDS",
+    "DEADLOCK_SECTION_TITLE",
+    "DEADLOCK_EXPLAIN_TEXT",
+    "FIRST_RUN_TEXT",
+    "FIRST_RUN_STEPS_TEXT",
+    "FIRST_RUN_TRY_TEXT",
+    "deadlock_ring_text",
+    "deadlock_graph_url",
+    "build_cycle_modal",
+    "chain_pressure_text",
+    "impact_stats_text",
+    "learn_text",
+    "workspace_map_url",
+    "heal_trend_url",
+    "first_run_diagram_url",
+    "next_best_action_blocks",
+    "heal_trend_chart",
+    "aging_spread_chart",
+    "healed_feed_table",
+    "MAP_CAPTION",
+    "MAP_MAX_EDGES",
 ]
 
 
@@ -1276,8 +2089,8 @@ def build_app_home_compact_view(
     Returns a Block Kit ``{"type": "home", "blocks": [...]}`` dict; pure and
     network-free like the default builder.
     """
-    blocked = blocked_on_you_rows(graph, now)
-    waiting = waiting_on_other_rows(graph, now)
+    blocked = blocked_on_you_rows(graph, now, user_id)
+    waiting = waiting_on_other_rows(graph, now, user_id)
     healed = auto_healed_rows(graph, now, user_id)
 
     blocks: list[dict[str, Any]] = []
@@ -1404,6 +2217,84 @@ def build_nudge_modal(
         "callback_id": NUDGE_MODAL_CALLBACK,
         "private_metadata": obligation.obligation_id,
         "title": {"type": "plain_text", "text": "Send a nudge", "emoji": True},
+        "submit": {"type": "plain_text", "text": "Send as you", "emoji": True},
+        "close": {"type": "plain_text", "text": "Cancel", "emoji": True},
+        "blocks": blocks,
+    }
+
+
+def build_composer_status_modal(text: str, *, title: str = "Send a nudge") -> dict[str, Any]:
+    """A submit-less composer shell showing ``text`` (drafting / failure notice).
+
+    Slack invalidates a ``trigger_id`` 3 seconds after the click — too tight for
+    the smart-tier draft. Handlers open this instantly to claim the trigger,
+    then swap in the real composer (or a failure notice) via ``views.update``.
+    """
+    return {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": title, "emoji": True},
+        "close": {"type": "plain_text", "text": "Cancel", "emoji": True},
+        "blocks": [_mrkdwn_section(text)],
+    }
+
+
+def build_cycle_modal(
+    plan: Any,
+    *,
+    names: Optional[Mapping[str, str]] = None,
+) -> dict[str, Any]:
+    """The deadlock first-move composer ``modal`` (the Cycle Breaker's Act step).
+
+    Same transparent-agent shape as the nudge composer — the smart-tier draft
+    pre-filled and *editable*, sent **as the user** only on explicit submit —
+    and deliberately the same ``callback_id`` / input block ids, so one
+    submission handler backs both composers. The break edge's obligation id
+    rides on ``private_metadata``.
+    """
+    edge = plan.break_edge
+    ring = deadlock_ring_text(plan.cycle.people, names)
+    debtor = _ring_display(edge.owes_person_id, names)
+
+    blocks: list[dict[str, Any]] = [
+        # Native alert block (modal-only surface) — the severity banner.
+        {
+            "type": "alert",
+            "level": "warning",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"Deadlock: {ring} — nobody moves until one edge does."[:200],
+            },
+        },
+        _mrkdwn_section(
+            f"*{ring}*\n"
+            f"Everyone in this ring is waiting on someone else. First move: "
+            f"*{debtor}* — {edge.subject_summary}"
+        ),
+        _context(f"Why this edge: {plan.rationale} · _chosen by {plan.source}_"),
+        {
+            "type": "input",
+            "block_id": NUDGE_MODAL_INPUT_BLOCK,
+            "label": {"type": "plain_text", "text": "Your message", "emoji": True},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": NUDGE_MODAL_INPUT_ACTION,
+                "multiline": True,
+                "initial_value": plan.draft_message,
+            },
+            "hint": {
+                "type": "plain_text",
+                "text": "Loop drafted this for you — edit it however you like.",
+                "emoji": True,
+            },
+        },
+        _context(f"Loop will send this *as you* · to {debtor}"),
+    ]
+
+    return {
+        "type": "modal",
+        "callback_id": NUDGE_MODAL_CALLBACK,
+        "private_metadata": edge.obligation_id,
+        "title": {"type": "plain_text", "text": "Break the deadlock", "emoji": True},
         "submit": {"type": "plain_text", "text": "Send as you", "emoji": True},
         "close": {"type": "plain_text", "text": "Cancel", "emoji": True},
         "blocks": blocks,

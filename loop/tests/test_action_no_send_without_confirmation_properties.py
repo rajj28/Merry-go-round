@@ -22,7 +22,7 @@ The single safety-critical invariant proven here, across all three send paths:
 
 These tests run against the *real* Action Agent and Conversational Agent and the
 *real* in-memory Obligation Graph; only the outward Slack "send as user" port,
-the Verifier, and Claude drafting are mocked so the send count can be asserted
+the Verifier, and LLM drafting are mocked so the send count can be asserted
 exactly. Each property runs ≥100 Hypothesis examples (enforced by the root
 ``conftest.py``) and carries the Property 16 traceability tag.
 
@@ -301,7 +301,7 @@ def test_property_16_conversational_send_requires_confirmation(
         verifier=_FakeVerifier(VerificationResult.UNRESOLVED),  # type: ignore[arg-type]
         now=clock.iso,
         slack_send_as_user=sender,
-        claude_draft=lambda obligation: "Drafted nudge text.",
+        draft=lambda obligation: "Drafted nudge text.",
     )
 
     # A deterministic parser that maps any text to the chosen send-as-user

@@ -6,9 +6,9 @@ recording to confirm the *live* pipeline reliably lands on the intended loops
 runs ONE full live cycle:
 
     build_rts_client            (real Slack RTS, assistant.search.context, user token)
-        -> Watcher.run_sweep    (scoped to LOOP_WATCH_CHANNELS, Haiku high-recall classify)
+        -> Watcher.run_sweep    (scoped to LOOP_WATCH_CHANNELS, fast-tier high-recall classify)
         -> AdjudicationQueue.drain
-        -> Adjudicator           (real Opus "whose court is the ball in?")
+        -> Adjudicator           (real the smart tier "whose court is the ball in?")
         -> SqliteObligationGraph (fresh in-memory store, per rehearsal)
         -> App Home hero count + blocked-on-you rows (loop.action.app_home)
 
@@ -22,7 +22,7 @@ It then prints a concise, NON-SECRET report:
 
 Requirements:
   * ``SLACK_USER_TOKEN`` (xoxp-…) — RTS runs on the user token (verified).
-  * ``ANTHROPIC_API_KEY`` — the Haiku classifier and Opus adjudicator.
+  * ``ANTHROPIC_API_KEY`` — the fast-tier classifier and the smart tier adjudicator.
 If either is missing the script prints a clear message and exits non-zero.
 
 Respects ``LOOP_WATCH_CHANNELS`` so a rehearsal only processes the demo channel.
@@ -64,7 +64,7 @@ from loop.action.app_home import (
 from loop.adjudicator.adjudicator import (
     Adjudicator,
     AdjudicationOutcome,
-    build_opus_reasoning_client,
+    build_smart_reasoning_client,
 )
 from loop.config import get_settings
 from loop.graph.models import utc_now_iso
@@ -72,7 +72,7 @@ from loop.graph.sqlite_store import IN_MEMORY, SqliteObligationGraph
 from loop.pipeline import AdjudicationQueue
 from loop.watcher.rts_contract import parse_rts_response
 from loop.watcher.watcher import (
-    build_haiku_classify_client,
+    build_fast_classify_client,
     build_rts_client,
 )
 from loop.watcher.watcher import Watcher
@@ -292,7 +292,7 @@ def run_live_cycle(style: Optional[str] = None, publish: bool = False) -> int:
 
     # --- build the REAL pipeline against a fresh in-memory graph ---------------
     graph = SqliteObligationGraph(database_path=IN_MEMORY)
-    adjudicator = Adjudicator(build_opus_reasoning_client(settings), graph)
+    adjudicator = Adjudicator(build_smart_reasoning_client(settings), graph)
     queue = AdjudicationQueue(adjudicator, user_id)
 
     # Wrap the real RTS client so we can also count the TOTAL candidates the live
@@ -308,7 +308,7 @@ def run_live_cycle(style: Optional[str] = None, publish: bool = False) -> int:
     watcher = Watcher(
         graph,
         _counting_rts,
-        classify=build_haiku_classify_client(settings),
+        classify=build_fast_classify_client(settings),
         forward=queue.enqueue,
         interval_seconds=settings.sweep_interval_seconds,
         watch_channels=watch_channels,

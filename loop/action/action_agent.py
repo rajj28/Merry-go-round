@@ -100,19 +100,19 @@ SlackSendAsUser = Callable[[str, str], None]
 
 # Polite Nudge drafting (task 12.1 — Req 7.1, 7.8).
 #
-# A Claude drafting port: given the Obligation to nudge, return the drafted reminder
+# A LLM drafting port: given the Obligation to nudge, return the drafted reminder
 # text. The Action Agent owns the *constraints* around the port — it clips the result
 # to at most :data:`NUDGE_DRAFT_MAX_CHARS` characters (Req 7.1) and treats any raise
 # (including a timeout) as a draft failure so nothing is sent (Req 7.8). The port MUST
 # honour the 10-second drafting budget and raise on timeout, mirroring how the Verifier
 # delegates its timeout budget to its injected client; the lazy real wiring below passes
 # the budget straight through to the Anthropic client.
-ClaudeDraftPort = Callable[[Obligation], str]
+DraftPort = Callable[[Obligation], str]
 
 # Req 7.1: a drafted Polite_Nudge is "no more than 1000 characters".
 NUDGE_DRAFT_MAX_CHARS = 1000
 
-# Req 7.1 / 7.8: Claude must draft "within 10 seconds"; the real port passes this
+# Req 7.1 / 7.8: the LLM must draft "within 10 seconds"; the real port passes this
 # budget to the Anthropic client and raises on timeout (handled as a draft failure).
 NUDGE_DRAFT_TIMEOUT_SECONDS = 10.0
 
@@ -169,17 +169,17 @@ def _lazy_send_as_user(recipient_id: str, text: str) -> None:
     )
 
 
-def _lazy_claude_draft(obligation: Obligation) -> str:
-    """Default Claude drafting port — real wiring is deferred to task 17.
+def _lazy_draft(obligation: Obligation) -> str:
+    """Default LLM drafting port — real wiring is deferred to task 17.
 
-    The Action Agent never hard-depends on a live Claude call: drafting is performed
-    through an injected :data:`ClaudeDraftPort` so it stays mockable in tests. When no
+    The Action Agent never hard-depends on a live LLM call: drafting is performed
+    through an injected :data:`DraftPort` so it stays mockable in tests. When no
     port is injected this lazy default is used; it defers the live wiring to
-    :func:`build_claude_draft_client`, raising to make the missing wiring explicit
+    :func:`build_draft_client`, raising to make the missing wiring explicit
     (a raise is treated as a draft failure, so nothing is sent — Req 7.8).
     """
     raise NotImplementedError(
-        "Live Claude nudge drafting is wired in task 17; inject a draft port to draft."
+        "Live LLM nudge drafting is wired in task 17; inject a draft port to draft."
     )
 
 
@@ -308,7 +308,7 @@ class NudgeDraftResult:
     """Outcome of an :meth:`ActionAgent.draft_polite_nudge` call.
 
     Attributes:
-        drafted: True iff Claude returned a draft within budget. False on a draft
+        drafted: True iff the LLM returned a draft within budget. False on a draft
             failure/timeout, in which case nothing is sent (Req 7.8).
         draft: The :class:`NudgeDraft` to show for one-tap confirmation when
             ``drafted`` is True; None on failure.
@@ -371,7 +371,7 @@ class ActionAgent:
             raises on failure. Injected so sending is mockable; when omitted, a lazy
             default reads workspace credentials from config and defers live wiring to
             task 17 (it never hard-depends on a live Slack call at construction time).
-        claude_draft: Injectable Claude drafting port used by
+        draft: Injectable LLM drafting port used by
             :meth:`draft_polite_nudge` (Req 7.1). Given the Obligation to nudge, it
             returns the drafted reminder text and MUST raise on failure/timeout (the
             10s drafting budget, Req 7.8). Injected so drafting is mockable; when
@@ -385,13 +385,13 @@ class ActionAgent:
         *,
         now: Callable[[], str] = utc_now_iso,
         slack_send_as_user: Optional[SlackSendAsUser] = None,
-        claude_draft: Optional[ClaudeDraftPort] = None,
+        draft: Optional[DraftPort] = None,
     ) -> None:
         self._graph = graph
         self._verifier = verifier
         self._now = now
         self._send_as_user: SlackSendAsUser = slack_send_as_user or _lazy_send_as_user
-        self._claude_draft: ClaudeDraftPort = claude_draft or _lazy_claude_draft
+        self._draft: DraftPort = draft or _lazy_draft
         # In-process record of the last *successful* digest delivery time (ISO 8601
         # UTC), used to enforce at most one digest per 24h (Req 11.5). Task 17 wires
         # the APScheduler trigger; persisting this across restarts is out of scope here.
@@ -467,7 +467,7 @@ class ActionAgent:
     def draft_polite_nudge(self, obligation: Obligation) -> NudgeDraftResult:
         """Draft a context-aware Polite_Nudge for ``obligation`` (task 12.1 — Req 7.1, 7.8).
 
-        Uses the injected Claude drafting port to produce, within the 10-second budget
+        Uses the injected LLM drafting port to produce, within the 10-second budget
         (enforced by the port, which raises on timeout), a reminder message that
         references the sender, the summarized subject, and the timestamp of the source
         Slack message (Req 7.1). The Action Agent owns the hard length constraint: the
@@ -483,7 +483,7 @@ class ActionAgent:
         Returns a :class:`NudgeDraftResult`; ``drafted`` is False on failure.
         """
         try:
-            text = self._claude_draft(obligation)
+            text = self._draft(obligation)
         except Exception as exc:  # noqa: BLE001 — any draft failure/timeout: send nothing
             # Req 7.8: drafting failed — inform the user, send nothing.
             return NudgeDraftResult(
@@ -845,6 +845,12 @@ class ActionAgent:
                 now=now_iso,
             )
         )
+        # The digest is personal: with third-party loops in the graph (edges
+        # between two *other* people, feeding the map/deadlock intelligence),
+        # only loops the user is a party to belong in their digest.
+        surfaced = [
+            o for o in surfaced if user_id in (o.owes_person_id, o.owed_person_id)
+        ]
 
         # Req 11.1 / 11.3: group by Loop_State and count each group.
         blocked_on_you_count = sum(
@@ -897,14 +903,16 @@ class ActionAgent:
         )
 
 
-def build_claude_draft_client(settings: Any | None = None) -> ClaudeDraftPort:
-    """Wire a real Claude-backed :data:`ClaudeDraftPort` for Polite_Nudge drafting.
+def build_draft_client(settings: Any | None = None) -> DraftPort:
+    """Wire a real LLM-backed :data:`DraftPort` for Polite_Nudge drafting.
 
-    Reads ANTHROPIC_API_KEY and the drafting model via ``loop.config.get_settings``
-    (or an injected ``settings``). The ``anthropic`` SDK and the network call are
-    imported/made lazily *inside* the returned callable, so importing this module —
-    and constructing the client — never touches the network or requires the
-    ``anthropic`` package to be installed.
+    Provider-agnostic: routes through :func:`loop.llm.chat` at the **fast tier**
+    (drafting is a cheap, high-volume task), which by default is the configured
+    Groq model and falls back to the Anthropic fast model when
+    ``llm_provider="anthropic"``. The provider SDK and the network call happen
+    lazily *inside* the returned callable, so importing this module — and
+    constructing the client — never touches the network or requires a provider
+    SDK installed. The active provider's credential is validated at build time.
 
     The returned port enforces the 10-second drafting budget (Req 7.1, 7.8) by
     bounding the call and **raising on timeout**; the Action Agent treats any raise as
@@ -920,19 +928,17 @@ def build_claude_draft_client(settings: Any | None = None) -> ClaudeDraftPort:
         from loop.config import get_settings
 
         settings = get_settings()
-    settings.require("anthropic_api_key")
-    api_key = settings.anthropic_api_key
-    # Drafting is a cheap, high-volume task — use the Haiku tier (design: Claude
-    # drafting port). The model name is configurable via settings.
-    model = settings.haiku_model
+    # Validate the active provider's credential at build time (provider-agnostic).
+    from loop.llm import require_provider_key
+
+    require_provider_key(settings)
 
     def _client(obligation: Obligation) -> str:
         import concurrent.futures
 
         def _draft() -> str:
-            from anthropic import Anthropic
+            from loop.llm import chat
 
-            client = Anthropic(api_key=api_key)
             prompt = (
                 "Draft a short, polite Slack reminder I will send as myself to nudge "
                 "an open loop. Keep it under 1000 characters, warm and concise.\n"
@@ -943,13 +949,11 @@ def build_claude_draft_client(settings: Any | None = None) -> ClaudeDraftPort:
                 "message was, but do not invent details. Respond with ONLY the "
                 "message text."
             )
-            message = client.messages.create(
-                model=model,
+            return chat(
+                [{"role": "user", "content": prompt}],
+                tier="fast",
+                settings=settings,
                 max_tokens=512,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return "".join(
-                getattr(block, "text", "") for block in getattr(message, "content", [])
             )
 
         # Enforce the 10s drafting budget across the whole round-trip; a timeout
@@ -979,5 +983,5 @@ __all__ = [
     "DELEGATE_MAX_ATTEMPTS",
     "DIGEST_MAX_ATTEMPTS",
     "DIGEST_WINDOW",
-    "build_claude_draft_client",
+    "build_draft_client",
 ]

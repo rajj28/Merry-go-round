@@ -59,7 +59,7 @@ from typing import Any, Mapping, Sequence
 
 @dataclass(frozen=True)
 class CandidateMessage:
-    """One open-loop candidate the Watcher will hand to Haiku for classification.
+    """One open-loop candidate the Watcher will hand to fast-tier for classification.
 
     Fields map 1:1 onto a single entry of ``results.messages`` from RTS.
     """

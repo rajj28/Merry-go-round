@@ -1,6 +1,6 @@
 """Example-based unit tests for the Adjudicator (tasks 5.1 + 5.2).
 
-Covers ``Adjudicator.adjudicate`` with a mocked Opus reasoning port (a thin
+Covers ``Adjudicator.adjudicate`` with a mocked the smart tier reasoning port (a thin
 injectable callable) and an in-memory Obligation Graph (``:memory:``):
 
 Task 5.1 (happy-path write):
@@ -11,7 +11,7 @@ Task 5.1 (happy-path write):
 
 Task 5.2 (discard / error / quiet-by-default eligibility):
   * not-a-loop / no-user / unknown-direction -> DISCARDED, no graph write (Req 3.4)
-  * Opus port raising -> ERROR, graph unchanged, error recorded            (Req 3.7)
+  * the smart tier port raising -> ERROR, graph unchanged, error recorded            (Req 3.7)
   * surfacing_eligible reflects confidence >= current threshold            (Req 3.5, 3.6)
 
 The direction property test (Property 8 / task 5.3) and the discard property test
@@ -24,7 +24,7 @@ from loop.adjudicator.adjudicator import (
     AdjudicationOutcome,
     Adjudicator,
     Direction,
-    OpusAdjudication,
+    SmartAdjudication,
 )
 from loop.graph.models import ArtifactType, LoopState
 from loop.graph.sqlite_store import IN_MEMORY, SqliteObligationGraph
@@ -39,25 +39,25 @@ OTHER_ID = "U_OTHER"
 # Test doubles
 # --------------------------------------------------------------------------- #
 class StubReasoningClient:
-    """A mock Opus port that returns a fixed judgement and records calls."""
+    """A mock the smart tier port that returns a fixed judgement and records calls."""
 
-    def __init__(self, judgement: OpusAdjudication) -> None:
+    def __init__(self, judgement: SmartAdjudication) -> None:
         self._judgement = judgement
         self.calls: list[dict] = []
 
-    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> OpusAdjudication:
+    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> SmartAdjudication:
         self.calls.append({"candidate": candidate, "user_id": user_id})
         return self._judgement
 
 
 class RaisingReasoningClient:
-    """A mock Opus port that simulates an unreachable/erroring Opus (Req 3.7)."""
+    """A mock the smart tier port that simulates an unreachable/erroring the smart tier (Req 3.7)."""
 
     def __init__(self, exc: Exception | None = None) -> None:
         self._exc = exc or RuntimeError("opus unreachable")
         self.calls: list[dict] = []
 
-    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> OpusAdjudication:
+    def __call__(self, candidate: CandidateMessage, *, user_id: str) -> SmartAdjudication:
         self.calls.append({"candidate": candidate, "user_id": user_id})
         raise self._exc
 
@@ -87,7 +87,7 @@ def _graph() -> SqliteObligationGraph:
 def test_user_owes_maps_to_blocked_on_you() -> None:
     # Req 3.2: when the user owes the response -> blocked-on-you, edge user->other.
     client = StubReasoningClient(
-        OpusAdjudication(
+        SmartAdjudication(
             is_loop=True,
             involves_user=True,
             direction=Direction.USER_OWES,
@@ -112,7 +112,7 @@ def test_user_owes_maps_to_blocked_on_you() -> None:
 def test_other_owes_maps_to_waiting_on_other() -> None:
     # Req 3.2: when the other party owes -> waiting-on-other, edge other->user.
     client = StubReasoningClient(
-        OpusAdjudication(
+        SmartAdjudication(
             is_loop=True,
             involves_user=True,
             direction=Direction.OTHER_OWES,
@@ -139,7 +139,7 @@ def test_other_owes_maps_to_waiting_on_other() -> None:
 # --------------------------------------------------------------------------- #
 def test_obligation_and_confidence_persisted_via_graph() -> None:
     client = StubReasoningClient(
-        OpusAdjudication(
+        SmartAdjudication(
             is_loop=True,
             involves_user=True,
             direction=Direction.OTHER_OWES,
@@ -171,7 +171,7 @@ def test_re_adjudicating_same_message_updates_not_duplicates() -> None:
 
     first = Adjudicator(
         StubReasoningClient(
-            OpusAdjudication(True, True, Direction.OTHER_OWES, 0.6, "v1")
+            SmartAdjudication(True, True, Direction.OTHER_OWES, 0.6, "v1")
         ),
         graph,
     ).adjudicate(candidate, user_id=USER_ID)
@@ -179,7 +179,7 @@ def test_re_adjudicating_same_message_updates_not_duplicates() -> None:
 
     second = Adjudicator(
         StubReasoningClient(
-            OpusAdjudication(True, True, Direction.OTHER_OWES, 0.9, "v2")
+            SmartAdjudication(True, True, Direction.OTHER_OWES, 0.9, "v2")
         ),
         graph,
     ).adjudicate(candidate, user_id=USER_ID)
@@ -193,7 +193,7 @@ def test_re_adjudicating_same_message_updates_not_duplicates() -> None:
 # --------------------------------------------------------------------------- #
 def test_confidence_above_one_is_clamped() -> None:
     client = StubReasoningClient(
-        OpusAdjudication(True, True, Direction.USER_OWES, 1.7, "over")
+        SmartAdjudication(True, True, Direction.USER_OWES, 1.7, "over")
     )
     graph = _graph()
     result = Adjudicator(client, graph).adjudicate(_candidate(), user_id=USER_ID)
@@ -203,7 +203,7 @@ def test_confidence_above_one_is_clamped() -> None:
 
 def test_confidence_below_zero_is_clamped() -> None:
     client = StubReasoningClient(
-        OpusAdjudication(True, True, Direction.OTHER_OWES, -0.5, "under")
+        SmartAdjudication(True, True, Direction.OTHER_OWES, -0.5, "under")
     )
     graph = _graph()
     result = Adjudicator(client, graph).adjudicate(_candidate(), user_id=USER_ID)
@@ -216,7 +216,7 @@ def test_confidence_below_zero_is_clamped() -> None:
 # --------------------------------------------------------------------------- #
 def test_not_a_loop_is_discarded_with_no_graph_write() -> None:
     client = StubReasoningClient(
-        OpusAdjudication(
+        SmartAdjudication(
             is_loop=False,
             involves_user=True,
             direction=Direction.USER_OWES,
@@ -237,7 +237,7 @@ def test_not_a_loop_is_discarded_with_no_graph_write() -> None:
 
 def test_does_not_involve_user_is_discarded_with_no_graph_write() -> None:
     client = StubReasoningClient(
-        OpusAdjudication(
+        SmartAdjudication(
             is_loop=True,
             involves_user=False,
             direction=Direction.OTHER_OWES,
@@ -256,7 +256,7 @@ def test_does_not_involve_user_is_discarded_with_no_graph_write() -> None:
 
 def test_unknown_direction_is_discarded_with_no_graph_write() -> None:
     client = StubReasoningClient(
-        OpusAdjudication(
+        SmartAdjudication(
             is_loop=True,
             involves_user=True,
             direction=Direction.UNKNOWN,
@@ -274,9 +274,9 @@ def test_unknown_direction_is_discarded_with_no_graph_write() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Task 5.2 — Opus error/unreachable: ERROR, graph unchanged, error recorded (Req 3.7)
+# Task 5.2 — smart-tier error/unreachable: ERROR, graph unchanged, error recorded (Req 3.7)
 # --------------------------------------------------------------------------- #
-def test_opus_error_returns_error_outcome_and_leaves_graph_unchanged() -> None:
+def test_smart_tier_error_returns_error_outcome_and_leaves_graph_unchanged() -> None:
     client = RaisingReasoningClient(RuntimeError("opus 503"))
     graph = _graph()
     result = Adjudicator(client, graph).adjudicate(_candidate(), user_id=USER_ID)
@@ -296,7 +296,7 @@ def test_opus_error_returns_error_outcome_and_leaves_graph_unchanged() -> None:
 def test_surfacing_eligible_true_when_confidence_at_or_above_threshold() -> None:
     # Default threshold is 0.5; confidence 0.8 is at/above -> eligible (Req 3.6).
     client = StubReasoningClient(
-        OpusAdjudication(True, True, Direction.OTHER_OWES, 0.8, "above threshold")
+        SmartAdjudication(True, True, Direction.OTHER_OWES, 0.8, "above threshold")
     )
     graph = _graph()
     result = Adjudicator(client, graph).adjudicate(_candidate(), user_id=USER_ID)
@@ -310,7 +310,7 @@ def test_surfacing_eligible_true_at_exact_threshold_boundary() -> None:
     graph = _graph()
     graph.set_threshold(0.7)
     client = StubReasoningClient(
-        OpusAdjudication(True, True, Direction.OTHER_OWES, 0.7, "exactly at threshold")
+        SmartAdjudication(True, True, Direction.OTHER_OWES, 0.7, "exactly at threshold")
     )
     result = Adjudicator(client, graph).adjudicate(_candidate(), user_id=USER_ID)
 
@@ -320,7 +320,7 @@ def test_surfacing_eligible_true_at_exact_threshold_boundary() -> None:
 def test_surfacing_eligible_false_when_confidence_below_threshold() -> None:
     # Default threshold is 0.5; confidence 0.3 is strictly below -> quiet (Req 3.5).
     client = StubReasoningClient(
-        OpusAdjudication(True, True, Direction.USER_OWES, 0.3, "below threshold")
+        SmartAdjudication(True, True, Direction.USER_OWES, 0.3, "below threshold")
     )
     graph = _graph()
     result = Adjudicator(client, graph).adjudicate(_candidate(), user_id=USER_ID)
@@ -338,9 +338,9 @@ def test_surfacing_eligible_false_when_confidence_below_threshold() -> None:
 # one, both stay None. Required for the live GitHub-MCP auto-close beat (Req 4, 8).
 # --------------------------------------------------------------------------- #
 def _real_loop_client() -> StubReasoningClient:
-    """A stub Opus that always reports a real blocked-on-you loop involving the user."""
+    """A stub the smart tier that always reports a real blocked-on-you loop involving the user."""
     return StubReasoningClient(
-        OpusAdjudication(
+        SmartAdjudication(
             is_loop=True,
             involves_user=True,
             direction=Direction.USER_OWES,

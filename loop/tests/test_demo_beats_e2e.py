@@ -6,7 +6,7 @@ network boundaries are mocked — exactly the seams the production composition r
 (:func:`loop.app.build_loop_app`) wires lazily:
 
   * the GitHub MCP PR-status client (the Verifier's injected port),
-  * the Claude nudge-drafting port (the Action Agent's injected port),
+  * the the LLM nudge-drafting port (the Action Agent's injected port),
   * the Slack "send as user" port (the Action Agent's injected port).
 
 Everything else is the genuine production code: the embedded SQLite Obligation
@@ -44,7 +44,7 @@ from loop.action.app_home import (
     hero_count,
     slack_date,
 )
-from loop.adjudicator.adjudicator import Adjudicator, Direction, OpusAdjudication
+from loop.adjudicator.adjudicator import Adjudicator, Direction, SmartAdjudication
 from loop.app import LoopApp
 from loop.config import Settings
 from loop.conversational.conversational_agent import ConversationalAgent
@@ -105,8 +105,8 @@ class FakeGitHubMcp:
         }
 
 
-def _claude_draft(obligation: Obligation) -> str:
-    """Deterministic Claude drafting double (the Action Agent's external boundary).
+def _draft(obligation: Obligation) -> str:
+    """Deterministic LLM drafting double (the Action Agent's external boundary).
 
     Mirrors a real nudge: references the subject and the source message timestamp,
     well under the 1000-char limit so the Action Agent's clip is a no-op here.
@@ -118,10 +118,10 @@ def _claude_draft(obligation: Obligation) -> str:
     )
 
 
-def _opus_user_owes(_c, *, user_id):  # noqa: ANN001
+def _smart_user_owes(_c, *, user_id):  # noqa: ANN001
     """Adjudicator reasoning double — not exercised by these beats but required to
     construct the real detection pipeline wiring."""
-    return OpusAdjudication(
+    return SmartAdjudication(
         is_loop=True,
         involves_user=True,
         direction=Direction.USER_OWES,
@@ -271,9 +271,9 @@ class SeededLoop:
             verifier,
             now=now,
             slack_send_as_user=send_as_user,
-            claude_draft=_claude_draft,
+            draft=_draft,
         )
-        adjudicator = Adjudicator(_opus_user_owes, graph)
+        adjudicator = Adjudicator(_smart_user_owes, graph)
         queue = AdjudicationQueue(adjudicator, USER)
         watcher = Watcher(
             graph,
@@ -297,8 +297,11 @@ class SeededLoop:
             user_id=USER,
             # Pin section rendering so these assertions don't depend on ambient
             # .env LOOP_UI_STYLE/LOOP_HOME_STYLE; the section-text helpers below
-            # read section blocks (the cards path is covered by its own tests).
-            settings=Settings(home_style="sections", assistant_style="sections"),
+            # read section blocks (the cards path is covered by its own tests,
+            # and the rich data_table feed by test_app_home_rich_blocks.py).
+            settings=Settings(
+                home_style="sections", assistant_style="sections", rich_blocks=False
+            ),
             now=now,
         )
 
@@ -317,6 +320,131 @@ class _CapturingClient:
 
     def chat_postMessage(self, **kwargs):  # noqa: ANN001
         pass
+
+
+class _RichRejectingClient(_CapturingClient):
+    """Rejects the first ``views_publish`` (a workspace refusing rich blocks)."""
+
+    def views_publish(self, **kwargs):  # noqa: ANN001
+        super().views_publish(**kwargs)
+        if len(self.published) == 1:
+            raise RuntimeError("invalid_blocks: data_table")
+
+
+def test_rich_view_falls_back_to_classic_when_publish_is_rejected(
+    loop: SeededLoop,
+) -> None:
+    """Failure-safe publish: a workspace that rejects the newest blocks gets
+    the classic layout on an immediate second publish — the Home never dies."""
+    import dataclasses
+
+    loop.app._settings = dataclasses.replace(loop.app._settings, rich_blocks=True)
+    client = _RichRejectingClient()
+    loop.app.open_home(USER, client)
+
+    assert len(client.published) == 2
+    rich_view = str(client.published[0]["view"])
+    classic_view = str(client.published[1]["view"])
+    # The seeded workspace has open loops, so rich mode renders the native
+    # aging chart; the fallback republish must carry none of the rich blocks.
+    assert "data_visualization" in rich_view
+    for rich_only in ("data_visualization", "data_table", "'container'"):
+        assert rich_only not in classic_view
+
+
+class _PartialRichClient(_CapturingClient):
+    """Rejects rich publishes the way Slack really does: an ``invalid_arguments``
+    response naming each unsupported block type, until the view stops carrying
+    the refused types."""
+
+    REFUSED = ("data_visualization", "container")
+
+    def views_publish(self, **kwargs):  # noqa: ANN001
+        super().views_publish(**kwargs)
+        text = str(kwargs["view"])
+        offending = [t for t in self.REFUSED if f"'{t}'" in text]
+        if offending:
+            exc = RuntimeError("The request to the Slack API failed: invalid_arguments")
+            exc.response = {  # duck-typed SlackResponse.data shape
+                "ok": False,
+                "error": "invalid_arguments",
+                "response_metadata": {
+                    "messages": [
+                        f"[ERROR] unsupported type: {t} [json-pointer:/view/blocks/5/type]"
+                        for t in offending
+                    ]
+                },
+            }
+            raise exc
+
+
+def test_rich_publish_adapts_to_the_workspace_instead_of_going_classic(
+    loop: SeededLoop,
+) -> None:
+    """Capability discovery: when Slack's rejection names the refused types,
+    the immediate republish drops exactly those — not the whole rich layer —
+    and the app remembers, so the next refresh publishes clean on the first try."""
+    import dataclasses
+
+    loop.app._settings = dataclasses.replace(loop.app._settings, rich_blocks=True)
+    client = _PartialRichClient()
+    loop.app.open_home(USER, client)
+
+    assert len(client.published) == 2  # one rejection, one adapted publish
+    retry_view = str(client.published[1]["view"])
+    for refused in _PartialRichClient.REFUSED:
+        assert f"'{refused}'" not in retry_view
+    assert loop.app._rich_unsupported == set(_PartialRichClient.REFUSED)
+
+    # The learned capability set persists: a later refresh needs no retry.
+    second = _PartialRichClient()
+    loop.app.open_home(USER, second)
+    assert len(second.published) == 1
+
+
+class TestUnsupportedBlockTypeParsing:
+    def test_reads_a_dict_response(self) -> None:
+        from loop.app import _unsupported_block_types
+
+        exc = RuntimeError("invalid_arguments")
+        exc.response = {
+            "response_metadata": {
+                "messages": [
+                    "[ERROR] unsupported type: data_visualization"
+                    " [json-pointer:/view/blocks/5/type]",
+                    "[ERROR] unsupported type: container"
+                    " [json-pointer:/view/blocks/9/type]",
+                    "[ERROR] failed to match all allowed schemas"
+                    " [json-pointer:/view]",
+                ]
+            }
+        }
+        assert _unsupported_block_types(exc) == {"data_visualization", "container"}
+
+    def test_reads_a_slack_response_like_object_via_data(self) -> None:
+        from loop.app import _unsupported_block_types
+
+        class _Resp:
+            data = {
+                "response_metadata": {
+                    "messages": [
+                        "[ERROR] unsupported type: data_table"
+                        " [json-pointer:/view/blocks/1/type]"
+                    ]
+                }
+            }
+
+        exc = RuntimeError("invalid_arguments")
+        exc.response = _Resp()
+        assert _unsupported_block_types(exc) == {"data_table"}
+
+    def test_yields_nothing_for_shapeless_errors(self) -> None:
+        from loop.app import _unsupported_block_types
+
+        assert _unsupported_block_types(RuntimeError("boom")) == set()
+        exc = RuntimeError("no metadata")
+        exc.response = {"ok": False, "error": "invalid_blocks"}
+        assert _unsupported_block_types(exc) == set()
 
 
 @pytest.fixture()

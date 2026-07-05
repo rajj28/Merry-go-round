@@ -1,17 +1,17 @@
 """Unit tests for Polite Nudge drafting constraints — task 12.7.
 
 Covers :meth:`loop.action.action_agent.ActionAgent.draft_polite_nudge` with a
-*mocked* Claude drafting port, asserting the two contractual constraints:
+*mocked* LLM drafting port, asserting the two contractual constraints:
 
   * **Req 7.1** — a successfully drafted nudge is no more than
     :data:`~loop.action.action_agent.NUDGE_DRAFT_MAX_CHARS` (1000) characters and
     references the sender, the summarized subject, and the timestamp of the source
     Slack message.
-  * **Req 7.8** — when the Claude port fails or times out, the draft path reports
+  * **Req 7.8** — when the the LLM port fails or times out, the draft path reports
     failure and nothing is sent (no message ever reaches the Slack "send as user"
     port).
 
-Only the outward ports are mocked (Claude drafting + Slack send-as-user); the
+Only the outward ports are mocked (LLM drafting + Slack send-as-user); the
 Action Agent itself and its real length-clipping logic are exercised directly.
 
 Validates: Requirements 7.1, 7.8.
@@ -87,12 +87,12 @@ def _obligation() -> Obligation:
     )
 
 
-def _agent(graph: SqliteObligationGraph, *, claude_draft, sender) -> ActionAgent:
+def _agent(graph: SqliteObligationGraph, *, draft, sender) -> ActionAgent:
     return ActionAgent(
         graph,
         verifier=_UnusedVerifier(),  # type: ignore[arg-type]
         slack_send_as_user=sender,
-        claude_draft=claude_draft,
+        draft=draft,
     )
 
 
@@ -102,14 +102,14 @@ def _agent(graph: SqliteObligationGraph, *, claude_draft, sender) -> ActionAgent
 def test_draft_references_sender_subject_timestamp_and_within_limit() -> None:
     """Validates: Requirement 7.1.
 
-    With a faithful mocked Claude that builds the reminder from the source message,
+    With a faithful mocked the LLM that builds the reminder from the source message,
     the drafted nudge references the sender, the summarized subject, and the source
     timestamp, and is no more than 1000 characters.
     """
     graph = SqliteObligationGraph(database_path=IN_MEMORY)
     sender = _RecordingSender()
 
-    def fake_claude(ob: Obligation) -> str:
+    def fake_draft(ob: Obligation) -> str:
         # A realistic context-aware reminder drawing on the source message fields.
         return (
             f"Hi {ob.owes_person_id}, just a gentle nudge on "
@@ -117,7 +117,7 @@ def test_draft_references_sender_subject_timestamp_and_within_limit() -> None:
             "still open on our side. Could you take a look when you get a moment? Thanks!"
         )
 
-    agent = _agent(graph, claude_draft=fake_claude, sender=sender)
+    agent = _agent(graph, draft=fake_draft, sender=sender)
     result = agent.draft_polite_nudge(_obligation())
 
     assert result.drafted is True
@@ -140,14 +140,14 @@ def test_draft_references_sender_subject_timestamp_and_within_limit() -> None:
 def test_draft_is_clipped_to_max_chars_when_model_overshoots() -> None:
     """Validates: Requirement 7.1.
 
-    Even if Claude returns more than 1000 characters, the Action Agent clips the
+    Even if the LLM returns more than 1000 characters, the Action Agent clips the
     draft so the 1000-character ceiling always holds.
     """
     graph = SqliteObligationGraph(database_path=IN_MEMORY)
     sender = _RecordingSender()
 
     overlong = "x" * (NUDGE_DRAFT_MAX_CHARS + 500)
-    agent = _agent(graph, claude_draft=lambda ob: overlong, sender=sender)
+    agent = _agent(graph, draft=lambda ob: overlong, sender=sender)
 
     result = agent.draft_polite_nudge(_obligation())
 
@@ -163,7 +163,7 @@ def test_draft_is_clipped_to_max_chars_when_model_overshoots() -> None:
 @pytest.mark.parametrize(
     "boom",
     [
-        RuntimeError("Claude is unavailable"),
+        RuntimeError("the LLM is unavailable"),
         TimeoutError("drafting exceeded the 10s budget"),
     ],
     ids=["error", "timeout"],
@@ -171,16 +171,16 @@ def test_draft_is_clipped_to_max_chars_when_model_overshoots() -> None:
 def test_draft_failure_reports_failure_and_sends_nothing(boom: Exception) -> None:
     """Validates: Requirement 7.8.
 
-    When the Claude drafting port raises (a plain failure or a timeout), the draft
+    When the LLM drafting port raises (a plain failure or a timeout), the draft
     path reports failure, produces no draft, and nothing is ever sent as the user.
     """
     graph = SqliteObligationGraph(database_path=IN_MEMORY)
     sender = _RecordingSender()
 
-    def failing_claude(ob: Obligation) -> str:
+    def failing_draft(ob: Obligation) -> str:
         raise boom
 
-    agent = _agent(graph, claude_draft=failing_claude, sender=sender)
+    agent = _agent(graph, draft=failing_draft, sender=sender)
     result = agent.draft_polite_nudge(_obligation())
 
     # Req 7.8: failure is reported, no draft is produced.

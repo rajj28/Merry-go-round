@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from loop.action.action_agent import ActionAgent
-from loop.adjudicator.adjudicator import Adjudicator, Direction, OpusAdjudication
+from loop.adjudicator.adjudicator import Adjudicator, Direction, SmartAdjudication
 from loop.app import (
     ACTION_CONFIRM_SEND,
     ACTION_DECLINE_SEND,
@@ -96,18 +96,24 @@ class FakeBoltApp:
 
 
 class FakeClient:
-    """Captures views_publish / views_open / chat_postMessage calls."""
+    """Captures views_publish / views_open / views_update / chat_postMessage calls."""
 
     def __init__(self):
         self.published: list[dict] = []
         self.messages: list[dict] = []
         self.opened_views: list[dict] = []
+        self.updated_views: list[dict] = []
 
     def views_publish(self, **kwargs):
         self.published.append(kwargs)
 
     def views_open(self, **kwargs):
         self.opened_views.append(kwargs)
+        # Mimic Slack's response shape so handlers can views_update the modal.
+        return {"view": {"id": f"V{len(self.opened_views)}"}}
+
+    def views_update(self, **kwargs):
+        self.updated_views.append(kwargs)
 
     def chat_postMessage(self, **kwargs):
         self.messages.append(kwargs)
@@ -123,8 +129,8 @@ class FakeVerifier:
         return self.result
 
 
-def _opus_user_owes(_c, *, user_id):  # noqa: ANN001
-    return OpusAdjudication(
+def _smart_user_owes(_c, *, user_id):  # noqa: ANN001
+    return SmartAdjudication(
         is_loop=True,
         involves_user=True,
         direction=Direction.USER_OWES,
@@ -153,6 +159,7 @@ def _obligation(oid="o1", state=LoopState.BLOCKED_ON_YOU, **kw) -> Obligation:
 def _build_app(
     *,
     sends: list | None = None,
+    behalf_sends: list | None = None,
     draft_ok: bool = True,
     verifier_result=VerificationResult.UNRESOLVED,
     now=utc_now_iso,
@@ -162,11 +169,12 @@ def _build_app(
     verifier = FakeVerifier(verifier_result)
 
     sent = sends if sends is not None else []
+    behalf = behalf_sends if behalf_sends is not None else []
 
     def send_as_user(channel, text):  # noqa: ANN001
         sent.append((channel, text))
 
-    def claude_draft(obligation):  # noqa: ANN001
+    def draft(obligation):  # noqa: ANN001
         if not draft_ok:
             raise RuntimeError("draft timeout")
         return "Hi — just nudging you about: " + obligation.subject_summary
@@ -176,9 +184,9 @@ def _build_app(
         verifier,  # type: ignore[arg-type]
         now=now,
         slack_send_as_user=send_as_user,
-        claude_draft=claude_draft,
+        draft=draft,
     )
-    adjudicator = Adjudicator(_opus_user_owes, graph)
+    adjudicator = Adjudicator(_smart_user_owes, graph)
     queue = AdjudicationQueue(adjudicator, USER)
     watcher = Watcher(
         graph,
@@ -200,6 +208,7 @@ def _build_app(
         user_id=USER,
         now=now,
         settings=settings,
+        send_on_behalf=lambda channel, text: behalf.append((channel, text)),
     )
 
 
@@ -361,8 +370,17 @@ def test_review_blocked_summarizes_blocked_loops():
     app.graph.upsert(
         _obligation("o2", subject_summary="sign the budget", owed_person_id="U_CAROL")
     )
-    # A waiting-on-other loop must not appear in the blocked-on-you summary.
-    app.graph.upsert(_obligation("w1", state=LoopState.WAITING_ON_OTHER))
+    # A waiting-on-other loop (OTHER owes USER) must not appear in the
+    # blocked-on-you summary.
+    app.graph.upsert(
+        _obligation(
+            "w1",
+            state=LoopState.WAITING_ON_OTHER,
+            owes_person_id=OTHER,
+            owed_person_id=USER,
+            owner_person_id=OTHER,
+        )
+    )
 
     result = app.handle_review_blocked(USER)
     assert not result.requires_confirmation
@@ -375,7 +393,16 @@ def test_review_blocked_summarizes_blocked_loops():
 
 def test_review_blocked_reports_all_clear_when_none_blocked():
     app = _build_app()
-    app.graph.upsert(_obligation("w1", state=LoopState.WAITING_ON_OTHER))
+    # A realistic waiting row: OTHER owes USER — nothing is blocked on USER.
+    app.graph.upsert(
+        _obligation(
+            "w1",
+            state=LoopState.WAITING_ON_OTHER,
+            owes_person_id=OTHER,
+            owed_person_id=USER,
+            owner_person_id=OTHER,
+        )
+    )
     result = app.handle_review_blocked(USER)
     assert "caught up" in result.text.lower()
 
@@ -415,9 +442,13 @@ def test_nudge_click_opens_editable_modal_with_ai_draft():
     body = {"user": {"id": USER}, "trigger_id": "T1", "actions": [{"value": "o1"}]}
     bolt.actions[ACTION_NUDGE](lambda *a, **k: None, body, client)
 
-    # A modal was opened (not a blind DM), carrying the obligation id + the draft.
+    # A status modal claims the trigger_id instantly (the smart-tier draft can
+    # outlive Slack's 3-second window), then views_update swaps in the composer.
     assert len(client.opened_views) == 1
-    view = client.opened_views[0]["view"]
+    assert client.opened_views[0]["view"]["type"] == "modal"
+    assert len(client.updated_views) == 1
+    view = client.updated_views[0]["view"]
+    assert client.updated_views[0]["view_id"] == "V1"
     assert view["type"] == "modal"
     assert view["callback_id"] == NUDGE_MODAL_CALLBACK
     assert view["private_metadata"] == "o1"
@@ -425,6 +456,92 @@ def test_nudge_click_opens_editable_modal_with_ai_draft():
     assert "review the deck" in input_block["element"]["initial_value"]
     # Nothing is sent yet — the draft is awaiting the modal submit.
     assert app.confirmations.get(USER) is not None
+
+
+def test_nudge_click_on_missing_loop_shows_notice_in_the_open_modal():
+    """When drafting fails (loop gone), the already-open status modal shows the
+    notice instead of falling back to a DM."""
+    app = _build_app()
+    bolt = FakeBoltApp()
+    app.register_handlers(bolt)
+    client = FakeClient()
+
+    body = {"user": {"id": USER}, "trigger_id": "T1", "actions": [{"value": "gone"}]}
+    bolt.actions[ACTION_NUDGE](lambda *a, **k: None, body, client)
+
+    assert len(client.opened_views) == 1
+    assert len(client.updated_views) == 1
+    assert client.updated_views[0]["view"].get("callback_id") is None  # notice, not composer
+    assert client.messages == []
+
+
+def test_nudge_click_by_a_stranger_never_reaches_the_composer():
+    """A member who is not a party to the loop gets a notice modal: no draft is
+    made and no pending send is registered (Req 13.2)."""
+    app = _build_app()
+    app.graph.upsert(_obligation("o1", subject_summary="review the deck"))
+    bolt = FakeBoltApp()
+    app.register_handlers(bolt)
+    client = FakeClient()
+
+    body = {"user": {"id": "U_STRANGER"}, "trigger_id": "T1", "actions": [{"value": "o1"}]}
+    bolt.actions[ACTION_NUDGE](lambda *a, **k: None, body, client)
+
+    assert len(client.opened_views) == 1
+    assert len(client.updated_views) == 1
+    assert client.updated_views[0]["view"].get("callback_id") is None  # notice, not composer
+    assert app.confirmations.get(USER) is None
+    assert app.confirmations.get("U_STRANGER") is None
+
+
+def test_member_with_their_own_token_sends_as_themselves():
+    """A member listed in LOOP_USER_TOKENS posts AS themselves — no bot fallback."""
+    sends: list = []
+    behalf: list = []
+    member_sends: list = []
+    app = _build_app(sends=sends, behalf_sends=behalf)
+    app._send_as_member = lambda member, channel, text: (
+        member_sends.append((member, channel, text)) or member == OTHER
+    )
+    app.graph.upsert(_obligation("o1", subject_summary="review the deck"))
+
+    view, message = app.prepare_nudge_modal("o1", actor=OTHER)
+    assert view is not None and message == ""
+    result = app.handle_nudge_modal_submit(OTHER, "o1", "any update?")
+
+    assert result.sent is True
+    assert "as you" in result.text.lower()
+    assert member_sends == [(OTHER, "C1", "any update?")]
+    assert behalf == []  # their own token was used; no attributed fallback
+    assert sends == []
+
+
+def test_other_party_nudges_and_the_bot_sends_on_their_behalf():
+    """Any member may nudge a loop they are a party to; without their own user
+    token the approved text goes out via the bot, attributed to them."""
+    sends: list = []
+    behalf: list = []
+    app = _build_app(sends=sends, behalf_sends=behalf)
+    app.graph.upsert(_obligation("o1", subject_summary="review the deck"))
+    bolt = FakeBoltApp()
+    app.register_handlers(bolt)
+    client = FakeClient()
+
+    # OTHER (the owed party) opens the composer: draft + pending keyed to them.
+    body = {"user": {"id": OTHER}, "trigger_id": "T1", "actions": [{"value": "o1"}]}
+    bolt.actions[ACTION_NUDGE](lambda *a, **k: None, body, client)
+    assert client.updated_views[0]["view"]["callback_id"] == NUDGE_MODAL_CALLBACK
+    assert app.confirmations.get(OTHER) is not None
+
+    result = app.handle_nudge_modal_submit(OTHER, "o1", "ping — any update?")
+
+    assert result.sent is True
+    assert sends == []  # never posted *as* the tracked user
+    assert len(behalf) == 1
+    channel, text = behalf[0]
+    assert channel == "C1"
+    assert f"<@{OTHER}>" in text and "ping — any update?" in text
+    assert app.confirmations.get(OTHER) is None
 
 
 def test_nudge_modal_submit_sends_edited_text_as_user():
@@ -492,8 +609,9 @@ def test_quick_nudge_dropdown_opens_modal_for_selected_person():
     }
     bolt.actions[ACTION_QUICK_NUDGE](lambda *a, **k: None, body, client)
 
-    assert len(client.opened_views) == 1
-    assert client.opened_views[0]["view"]["private_metadata"] == "o2"
+    assert len(client.opened_views) == 1  # the instant status modal
+    assert len(client.updated_views) == 1
+    assert client.updated_views[0]["view"]["private_metadata"] == "o2"
 
 
 # --------------------------------------------------------------------------- #

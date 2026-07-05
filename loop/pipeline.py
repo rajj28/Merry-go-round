@@ -4,7 +4,7 @@ design.md → "Deployment shape": *"The Adjudicator and Verifier run as internal
 services invoked from the work queue."* This module is that work queue: the thin,
 in-process seam that decouples the Watcher (Perceive) from the Adjudicator
 (Reason) so the Watcher can forward a high-recall stream of candidates without
-blocking on Opus latency.
+blocking on smart-tier latency.
 
 Shape (monolith-with-workers, Req 2.1 path):
 
@@ -23,7 +23,7 @@ the live app and the tests:
     :class:`~loop.adjudicator.adjudicator.AdjudicationResult` for every candidate
     processed (deterministic for tests and the seeded demo).
 
-The queue never lets an Adjudicator failure escape the worker loop: an Opus error
+The queue never lets an Adjudicator failure escape the worker loop: a smart-tier error
 is already absorbed by the Adjudicator (Req 3.7), and any unexpected exception is
 caught and logged here so one bad candidate can never kill the worker that drains
 the rest. This keeps the autonomous sensing→adjudication path (Req 13.1) running
@@ -96,7 +96,7 @@ class AdjudicationQueue:
         """Hand a Watcher-forwarded candidate to the queue (the Watcher ``ForwardFn``).
 
         Non-blocking: the candidate is queued and the Watcher sweep returns
-        immediately, so Opus latency never slows perception (Req 2.1).
+        immediately, so smart-tier latency never slows perception (Req 2.1).
         """
         self._queue.put(_QueuedCandidate(candidate=candidate, user_id=self._user_id))
 
@@ -167,7 +167,7 @@ class AdjudicationQueue:
     def _adjudicate_one(self, item: _QueuedCandidate) -> Optional[AdjudicationResult]:
         """Adjudicate one queued candidate, never letting a failure escape.
 
-        The Adjudicator already absorbs an Opus error into an ``ERROR`` result
+        The Adjudicator already absorbs a smart-tier error into an ``ERROR`` result
         (Req 3.7); this guard additionally contains any *unexpected* exception so one
         bad candidate cannot kill the worker draining the rest.
         """
@@ -181,12 +181,48 @@ class AdjudicationQueue:
             )
             return None
 
+        _log_adjudication(item.candidate, result)
+
         if self._on_result is not None:
             try:
                 self._on_result(result)
             except Exception:  # noqa: BLE001 — a UI refresh failure must not stop draining.
                 logger.exception("on_result callback failed after adjudication")
         return result
+
+
+def _log_adjudication(
+    candidate: CandidateMessage, result: AdjudicationResult
+) -> None:
+    """Log every adjudication outcome so a dropped candidate is never silent.
+
+    CREATED/UPDATED log at INFO with the written edge; DISCARDED logs the reason;
+    ERROR logs whichever error indication the result carries. Message text is never
+    logged — only the source reference and the structured judgement.
+    """
+    from loop.adjudicator.adjudicator import AdjudicationOutcome
+
+    key = candidate.dedup_key
+    if result.outcome in (AdjudicationOutcome.CREATED, AdjudicationOutcome.UPDATED):
+        o = result.obligation
+        logger.info(
+            "adjudicated %s: %s %s -> %s (%s, conf=%.2f, surfacing=%s)",
+            key,
+            result.outcome.value,
+            o.owes_person_id if o else "?",
+            o.owed_person_id if o else "?",
+            o.loop_state.value if o else "?",
+            o.confidence_score if o else -1.0,
+            result.surfacing_eligible,
+        )
+    elif result.outcome is AdjudicationOutcome.DISCARDED:
+        logger.info("adjudicated %s: discarded (%s)", key, result.discard_reason)
+    else:  # ERROR
+        logger.warning(
+            "adjudicated %s: error (%s)",
+            key,
+            result.error_message or result.error,
+        )
 
 
 __all__ = ["AdjudicationQueue"]

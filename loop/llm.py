@@ -31,6 +31,14 @@ from typing import Any, Mapping, Optional, Sequence
 FAST_TIER = "fast"
 SMART_TIER = "smart"
 
+# Models whose hidden chain-of-thought counts against ``max_tokens`` on Groq.
+# A tight caller-side cap starves them mid-thought (json_validate_failed:
+# "max completion tokens reached before generating a valid document"), so the
+# Groq path pins them to low reasoning effort and guarantees token headroom.
+# Only the gpt-oss family accepts reasoning_effort low|medium|high on Groq.
+_REASONING_MODEL_PREFIXES = ("openai/gpt-oss",)
+_REASONING_MIN_MAX_TOKENS = 2048
+
 
 def _resolve_settings(settings: Any | None) -> Any:
     if settings is not None:
@@ -119,6 +127,9 @@ def _chat_groq(
         "max_tokens": max_tokens,
         "messages": list(messages),
     }
+    if model.startswith(_REASONING_MODEL_PREFIXES):
+        kwargs["reasoning_effort"] = "low"
+        kwargs["max_tokens"] = max(max_tokens, _REASONING_MIN_MAX_TOKENS)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 

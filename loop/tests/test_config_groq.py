@@ -51,8 +51,12 @@ def test_grok_api_takes_precedence_over_groq_api_key(monkeypatch: pytest.MonkeyP
 
 
 def test_groq_defaults_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    import loop.config
     from loop.config import load_settings
 
+    # Neutralize the on-disk .env: delenv alone is not enough, because
+    # load_settings() re-reads it and repopulates whatever it defines.
+    monkeypatch.setattr(loop.config, "_load_env_file", lambda: None)
     for name in ("LLM_PROVIDER", "GROQ_BASE_URL", "LOOP_FAST_MODEL", "LOOP_SMART_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
@@ -61,6 +65,17 @@ def test_groq_defaults_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.groq_base_url == "https://api.groq.com/openai/v1"
     assert settings.fast_model == "llama-3.1-8b-instant"
     assert settings.smart_model == "llama-3.3-70b-versatile"
+
+
+def test_user_tokens_parse_and_are_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    from loop.config import load_settings
+
+    monkeypatch.setenv(
+        "LOOP_USER_TOKENS", "U0AAA:xoxp-alpha, U0BBB:xoxp-beta ,junk, :xoxp-x, U0CCC:"
+    )
+    settings = load_settings()
+    assert settings.user_tokens == (("U0AAA", "xoxp-alpha"), ("U0BBB", "xoxp-beta"))
+    assert "xoxp-alpha" not in repr(settings)
 
 
 def test_groq_api_key_redacted_in_repr() -> None:

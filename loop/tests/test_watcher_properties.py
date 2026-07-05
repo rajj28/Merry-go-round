@@ -3,19 +3,19 @@
 These exercise the *real* :class:`loop.watcher.watcher.Watcher` (no mocking of the
 Watcher itself) against the universal correctness properties from
 design.md → "Correctness Properties". The external ports are injected as test
-doubles, matching the design's testing rule that "external dependencies (Haiku,
-Opus, ...) are mocked so properties test Loop's logic":
+doubles, matching the design's testing rule that "external dependencies (fast-tier,
+the smart tier, ...) are mocked so properties test Loop's logic":
 
   * the RTS port is a mock callable returning a fixed ``assistant.search.context``
     response (the shape :func:`loop.watcher.rts_contract.parse_rts_response` reads);
-  * the ``classify`` port (Haiku 4.5) is a mock per-candidate boolean verdict;
+  * the ``classify`` port (the fast tier) is a mock per-candidate boolean verdict;
   * the ``forward`` port (Adjudicator hand-off) is a mock recorder;
   * the dedup state is a real ``:memory:`` :class:`SqliteObligationGraph`.
 
 Coverage:
   * 4.4 → Property 6 — High-recall forwarding loses no positive candidate (Req 2.5)
   * 4.5 → Property 7 — No duplicate candidate per source message (Req 2.9)
-  * 4.6 → fault-injection unit tests — RTS empty / RTS error+retry / Haiku failure
+  * 4.6 → fault-injection unit tests — RTS empty / RTS error+retry / fast-tier failure
     + re-evaluate next sweep (Req 2.6, 2.7, 2.8)
 
 Each property test runs ≥100 generated examples (enforced by the root ``conftest.py``)
@@ -233,7 +233,7 @@ def test_property_7_no_duplicate_candidate_per_source_message(
 
 
 # --------------------------------------------------------------------------- #
-# Task 4.6 — Fault-injection unit tests (example-based): RTS + Haiku failures
+# Task 4.6 — Fault-injection unit tests (example-based): RTS + fast-tier failures
 # --------------------------------------------------------------------------- #
 def test_rts_empty_creates_no_obligations() -> None:
     """Validates: Requirement 2.6.
@@ -318,34 +318,34 @@ def test_rts_error_is_fully_contained_for_all_failure_modes() -> None:
         assert forwarded == []
 
 
-def test_haiku_failure_excludes_candidate_and_reevaluates_next_sweep() -> None:
+def test_fast_tier_failure_excludes_candidate_and_reevaluates_next_sweep() -> None:
     """Validates: Requirement 2.8.
 
-    When the Haiku classifier fails (raises) for a candidate, the Watcher excludes
+    When the fast-tier classifier fails (raises) for a candidate, the Watcher excludes
     it from forwarding without marking it processed, so the next sweep that retrieves
-    it re-evaluates it. Here Haiku fails on the first sweep and succeeds on the
+    it re-evaluates it. Here fast-tier fails on the first sweep and succeeds on the
     second; the candidate is forwarded exactly once, on the second sweep.
     """
     forwarded: list[CandidateMessage] = []
     calls = {"n": 0}
 
-    def flaky_haiku(_c: CandidateMessage) -> bool:
+    def flaky_classifier(_c: CandidateMessage) -> bool:
         calls["n"] += 1
         if calls["n"] == 1:
-            raise RuntimeError("transient Haiku error")
+            raise RuntimeError("transient fast-tier error")
         return True
 
     client = StaticRtsClient(_rts_ok(_rts_message("C1", "100.1")))
     watcher = Watcher(
         _graph(),
         client,
-        classify=flaky_haiku,
+        classify=flaky_classifier,
         forward=forwarded.append,
         interval_seconds=30,
     )
 
-    first = watcher.run_sweep()  # Haiku raises → excluded, no crash
-    assert first.rts_ok is True  # RTS itself succeeded; only Haiku failed
+    first = watcher.run_sweep()  # fast-tier raises → excluded, no crash
+    assert first.rts_ok is True  # RTS itself succeeded; only fast-tier failed
     assert first.new_candidates == []
     assert forwarded == []
 
@@ -354,27 +354,27 @@ def test_haiku_failure_excludes_candidate_and_reevaluates_next_sweep() -> None:
     assert [c.dedup_key for c in forwarded] == [("C1", "100.1")]
 
 
-def test_haiku_failure_on_live_message_is_reevaluated_by_a_later_sweep() -> None:
+def test_fast_tier_failure_on_live_message_is_reevaluated_by_a_later_sweep() -> None:
     """Validates: Requirement 2.8.
 
-    The live message path shares the same exclusion semantics: a Haiku failure on a
+    The live message path shares the same exclusion semantics: a fast-tier failure on a
     live message excludes it (CLASSIFY_FAILED) without marking it processed, so a
     later sweep that retrieves the same source message re-evaluates and forwards it.
     """
     forwarded: list[CandidateMessage] = []
     calls = {"n": 0}
 
-    def flaky_haiku(_c: CandidateMessage) -> bool:
+    def flaky_classifier(_c: CandidateMessage) -> bool:
         calls["n"] += 1
         if calls["n"] == 1:
-            raise RuntimeError("transient Haiku error")
+            raise RuntimeError("transient fast-tier error")
         return True
 
     client = StaticRtsClient(_rts_ok(_rts_message("C1", "100.1")))
     watcher = Watcher(
         _graph(),
         client,
-        classify=flaky_haiku,
+        classify=flaky_classifier,
         forward=forwarded.append,
         interval_seconds=30,
     )
