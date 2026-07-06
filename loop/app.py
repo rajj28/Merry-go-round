@@ -65,13 +65,14 @@ from loop.action.app_home import (
     build_composer_status_modal,
     build_cycle_modal,
     build_nudge_modal,
+    BLOCKED_SECTION_DESCRIPTOR,
+    SPOTLIGHT_EYEBROW,
     NUDGE_MODAL_CALLBACK,
     NUDGE_MODAL_INPUT_ACTION,
     NUDGE_MODAL_INPUT_BLOCK,
     resolved_person_id,
     slack_date,
     waiting_on_other_rows,
-    workspace_map_url,
 )
 from loop.adjudicator.adjudicator import Adjudicator
 from loop.config import Settings, get_settings
@@ -82,7 +83,7 @@ from loop.conversational.assistant_view import (
     people_in_reply,
 )
 from loop.conversational.conversational_agent import ConversationalAgent
-from loop.graph.models import Obligation, ObligationId, UserId, utc_now_iso
+from loop.graph.models import LoopState, Obligation, ObligationId, UserId, utc_now_iso
 from loop.graph.sqlite_store import SqliteObligationGraph
 from loop.learn.feedback import LearnEngine
 from loop.pipeline import AdjudicationQueue
@@ -373,6 +374,13 @@ class LoopApp:
         # e.g. a workspace without `data_visualization` still gets the native
         # `data_table` feed.
         self._rich_unsupported: set[str] = set()
+        # Members with a live App Home — everyone who has opened the Home tab at
+        # least once. A background graph change proactively republishes the Home
+        # for the affected members in this set, so a newly-caught loop appears
+        # without the viewer having to reopen the tab. Bounded by real openers,
+        # so we never call views.publish for non-app users (seeded personas,
+        # third-party mentions) or hammer a rate-limited workspace.
+        self._home_viewers: set[UserId] = set()
 
     # ==================================================================
     # App Home (Req 6) — publish the real dashboard view
@@ -384,11 +392,14 @@ class LoopApp:
         builder) and publishes it. Any publish failure is logged and swallowed so a
         single bad publish cannot crash the socket loop.
         """
+        # Remember this member has a live Home so background graph changes can
+        # proactively refresh it (see ``_refresh_home_for``).
+        self._home_viewers.add(user_id)
         try:
             now = self._now()
             chain_report, break_plans, edges = self._chain_intelligence()
             # Resolve names/avatars for everyone the intelligence layer renders:
-            # deadlock rings, chain-pressure samples, and the workspace map.
+            # deadlock rings and chain-pressure samples.
             ring_people: set[str] = set()
             for plan in break_plans:
                 ring_people.update(plan.cycle.people)
@@ -397,16 +408,14 @@ class LoopApp:
                 ring_people.add(edge.owed_person_id)
             avatars = self._home_avatars(now, client, ring_people, viewer=user_id)
             names = self._home_names(now, client, ring_people, viewer=user_id)
-            cycle_edge_ids = frozenset(
-                e.obligation_id for plan in break_plans for e in plan.cycle.edges
-            )
-            map_url = workspace_map_url(
-                edges,
-                user_id,
-                names=names,
-                cycle_edge_ids=cycle_edge_ids,
-                chain_report=chain_report,
-            )
+            # The viewer's own display name for the greeting eyebrow (best-effort;
+            # cached). Falls back to the names map if they were also a counterparty.
+            viewer_name = names.get(user_id)
+            if not viewer_name and client is not None:
+                try:
+                    viewer_name = self._avatars.resolve_names({user_id}, client).get(user_id)
+                except Exception:  # noqa: BLE001 — the greeting is cosmetic.
+                    viewer_name = None
             if self._settings.home_layout == "compact":
                 view = build_app_home_compact_view(
                     self.graph,
@@ -426,6 +435,7 @@ class LoopApp:
                     user_id=user_id,
                     avatars=avatars,
                     names=names,
+                    viewer_name=viewer_name,
                     logo_url=self._settings.logo_url,
                     style=self._settings.home_style,
                     chain_report=chain_report,
@@ -433,12 +443,23 @@ class LoopApp:
                     learn_threshold=self.graph.get_threshold(),
                     show_impact=True,
                     demo_controls=self._settings.demo_mode,
-                    map_url=map_url,
                     rich=rich,
                     rich_disabled=frozenset(self._rich_unsupported),
                 )
 
             rich = bool(self._settings.rich_blocks)
+            # Diagnostic: prove exactly what we hand Slack for this user's Home.
+            _classic = _build(False)
+            _txt = str(_classic)
+            logger.info(
+                "publishing App Home for %s: layout=%s blocks=%d greeting=%s spotlight=%s descriptors=%s",
+                user_id,
+                self._settings.home_layout,
+                len(_classic.get("blocks", [])),
+                bool(viewer_name),
+                SPOTLIGHT_EYEBROW in _txt,
+                BLOCKED_SECTION_DESCRIPTOR in _txt,
+            )
             try:
                 client.views_publish(user_id=user_id, view=_build(rich))
             except Exception as exc:  # noqa: BLE001 — rich blocks may be unsupported here.
@@ -522,7 +543,10 @@ class LoopApp:
         return self._cycle_client
 
     def prepare_cycle_modal(
-        self, obligation_id: ObligationId, actor: Optional[UserId] = None
+        self,
+        obligation_id: ObligationId,
+        actor: Optional[UserId] = None,
+        client: Any = None,
     ) -> tuple[Optional[dict], str]:
         """The deadlock first-move composer: pre-filled, editable, gated.
 
@@ -562,8 +586,17 @@ class LoopApp:
                 ),
             ),
         )
-        names = {p: nm for p, nm in seed_names().items()} if self._settings.demo_mode else None
-        return build_cycle_modal(plan, names=names), ""
+        # Human names in the modal copy (the ring, "First move", the footer) —
+        # live-resolved from Slack, with the seeded names as the demo fallback;
+        # any resolution failure degrades to raw ids, never an error.
+        names: dict[str, str] = {}
+        if self._settings.demo_mode:
+            names.update(seed_names())
+        try:
+            names.update(self._avatars.resolve_names(set(plan.cycle.people), client))
+        except Exception:  # noqa: BLE001 — names are cosmetic; ids still work.
+            logger.exception("cycle modal name resolution failed")
+        return build_cycle_modal(plan, names=names or None), ""
 
     def _home_avatars(
         self,
@@ -642,6 +675,48 @@ class LoopApp:
         if client is None:
             return
         self.open_home(self.user_id, client)
+
+    @staticmethod
+    def _affected_members(results: list[Any]) -> set[UserId]:
+        """The edge endpoints a drain touched — the people whose Home changed.
+
+        Only CREATED/UPDATED results carry an obligation; DISCARDED/ERROR ones
+        do not, so they contribute nothing.
+        """
+        members: set[UserId] = set()
+        for result in results:
+            obligation = getattr(result, "obligation", None)
+            if obligation is None:
+                continue
+            if obligation.owes_person_id:
+                members.add(obligation.owes_person_id)
+            if obligation.owed_person_id:
+                members.add(obligation.owed_person_id)
+        return members
+
+    def _refresh_home_for(self, members: set[UserId], client: Any) -> None:
+        """Proactively re-publish App Home for every affected member with a live Home.
+
+        After a background graph change (detection sweep or a live message), push
+        a fresh dashboard to each edge endpoint that has opened the app at least
+        once — so a newly-caught loop shows up without the viewer reopening the
+        tab. The tracked user is always refreshed (prior behaviour); other
+        members are refreshed only when they're known Home viewers, so we never
+        call ``views.publish`` for people who aren't app users and we touch just
+        the one or two people actually on a changed edge — cheap even on a
+        rate-limited workspace. Each publish is best-effort (``open_home``
+        swallows failures).
+        """
+        if client is None:
+            return
+        targets = {self.user_id} | (members & self._home_viewers)
+        logger.info(
+            "refreshing App Home for %d member(s) after graph change: %s",
+            len(targets),
+            ", ".join(sorted(targets)),
+        )
+        for user_id in targets:
+            self.open_home(user_id, client)
 
     # ==================================================================
     # Row actions (Req 6 buttons → Action Agent / Learn)
@@ -759,7 +834,7 @@ class LoopApp:
                             text="Sending for other members isn't configured yet; "
                             "nothing was sent."
                         )
-                    self._send_on_behalf(base.channel, f"🔔 From <@{user_id}>:\n{text}")
+                    self._send_on_behalf(base.channel, f"From <@{user_id}>:\n{text}")
             except Exception:  # noqa: BLE001
                 logger.exception("member nudge send failed")
                 return HandlerResult(text="The nudge could not be sent.")
@@ -769,7 +844,7 @@ class LoopApp:
                     healed.model_copy(update={"last_touch_timestamp": self._now()})
                 )
             return HandlerResult(
-                text="Sent as you. ✅" if sent_as_self else "Sent on your behalf. ✅",
+                text="Sent as you." if sent_as_self else "Sent on your behalf.",
                 sent=True,
                 obligation=healed,
                 blocks=self._sent_nudge_blocks(healed, text, base.channel),
@@ -782,7 +857,7 @@ class LoopApp:
         if not send.sent:
             return HandlerResult(text=send.error or "The nudge could not be sent.")
         return HandlerResult(
-            text="Sent as you. ✅",
+            text="Sent as you.",
             sent=True,
             obligation=send.obligation,
             blocks=self._sent_nudge_blocks(send.obligation, text, base.channel),
@@ -799,7 +874,7 @@ class LoopApp:
         if channel:
             ctx += f" · in <#{channel}>"
         ctx += f" · {slack_date(self._now())}"
-        return _confirmation_blocks("✅ *Nudge sent*", quote=message, context=ctx)
+        return _confirmation_blocks("*Nudge sent*", quote=message, context=ctx)
 
     def handle_delegate_click(
         self, obligation_id: ObligationId, teammate_id: str
@@ -853,7 +928,7 @@ class LoopApp:
             text=msg,
             obligation=ob,
             blocks=_confirmation_blocks(
-                "🕓 *Snoozed*",
+                "*Snoozed*",
                 context=" · ".join(ctx_parts),
                 undo_action=ACTION_UNDO_SNOOZE,
                 oid=oid,
@@ -880,7 +955,7 @@ class LoopApp:
         return HandlerResult(
             text=msg,
             blocks=_confirmation_blocks(
-                "🗑️ *Dismissed*",
+                "*Dismissed*",
                 context=" · ".join(ctx_parts) or None,
                 undo_action=ACTION_UNDO_DISMISS,
                 oid=obligation_id,
@@ -906,7 +981,7 @@ class LoopApp:
         return HandlerResult(
             text="Restored — this loop is back on your dashboard.",
             obligation=restored,
-            blocks=_confirmation_blocks("↩️ *Restored*", context=restored.subject_summary or None),
+            blocks=_confirmation_blocks("*Restored*", context=restored.subject_summary or None),
         )
 
     def handle_undo_snooze(self, obligation_id: ObligationId) -> HandlerResult:
@@ -926,7 +1001,7 @@ class LoopApp:
         return HandlerResult(
             text="Un-snoozed — this loop is back on your dashboard.",
             obligation=restored,
-            blocks=_confirmation_blocks("↩️ *Un-snoozed*", context=restored.subject_summary or None),
+            blocks=_confirmation_blocks("*Un-snoozed*", context=restored.subject_summary or None),
         )
 
     def handle_review_blocked(self, user_id: UserId) -> HandlerResult:
@@ -939,12 +1014,37 @@ class LoopApp:
         message body as a value so the Bolt handler can DM it without this method
         touching Slack.
         """
+        return self._review_blocked_result(user_id)
+
+    def open_review_modal(self, user_id: UserId, trigger_id: str, client: Any) -> None:
+        """Open the "Blocked on you" summary modal for the user (Req 6.1).
+
+        The Review button's on-screen result: instead of DMing a summary (which lands
+        in the Loop DM and is easy to miss), this pops a modal open immediately. Any
+        failure is logged and swallowed so a bad open can't crash the socket loop.
+        """
+        if client is None or not trigger_id:
+            return
+        from loop.action.app_home import build_review_modal
+
+        try:
+            view = build_review_modal(self.graph, self._now(), user_id)
+            client.views_open(trigger_id=trigger_id, view=view)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to open review-blocked modal for %s", user_id)
+
+    def _review_blocked_result(self, user_id: UserId) -> HandlerResult:
+        """Summarize the loops blocked on the user as a :class:`HandlerResult`.
+
+        Retained as the text/blocks summary shared by tests and any DM fallback;
+        the live Review button renders it on-screen via :meth:`open_review_modal`.
+        """
         rows = blocked_on_you_rows(self.graph, self._now(), user_id)
         if not rows:
             return HandlerResult(
-                text="You're all caught up — nobody's blocked on you. 🎉",
+                text="You're all caught up — nobody's blocked on you.",
                 blocks=_confirmation_blocks(
-                    "🎉 *You're all caught up*",
+                    "*You're all caught up*",
                     context="Nobody's blocked on you right now.",
                 ),
             )
@@ -999,7 +1099,7 @@ class LoopApp:
             if not send.sent:
                 return HandlerResult(text=send.error or "The nudge could not be sent.")
             return HandlerResult(
-                text="Sent as you. ✅",
+                text="Sent as you.",
                 sent=True,
                 obligation=send.obligation,
                 blocks=self._sent_nudge_blocks(send.obligation, draft_text, channel),
@@ -1012,11 +1112,11 @@ class LoopApp:
             if not result.delegated:
                 return HandlerResult(text=result.error or "Delegation was not completed.")
             return HandlerResult(
-                text=f"Delegated to {result.teammate_id}. ✅",
+                text=f"Delegated to {result.teammate_id}.",
                 sent=True,
                 obligation=result.obligation,
                 blocks=_confirmation_blocks(
-                    "📨 *Delegated*",
+                    "*Delegated*",
                     context=f"to <@{result.teammate_id}> · {slack_date(self._now())}",
                 ),
             )
@@ -1073,8 +1173,68 @@ class LoopApp:
         except Exception:  # noqa: BLE001 — a sweep must never crash the scheduler.
             logger.exception("watcher sweep failed")
             return
-        if results and client is not None:
-            self._refresh_home(client)
+        # Autonomous auto-heal (Req 8): re-verify every open PR-linked loop and
+        # close the ones whose PR is now merged, so a loop heals *within a sweep*
+        # after its work is verifiably done — no user action, no dashboard touch.
+        healed = self.reconcile_pr_closures()
+        if client is not None:
+            # Only republish on a real graph change — a drain that merely
+            # discarded candidates leaves every Home identical, so skip the
+            # needless views.publish (matters on a rate-limited workspace). A
+            # loop that just auto-closed is a real change too, so fold in the
+            # members on every healed edge.
+            affected = self._affected_members(results) | self._affected_members(healed)
+            if affected:
+                self._refresh_home_for(affected, client)
+
+    def reconcile_pr_closures(self) -> list[Any]:
+        """Auto-close every open PR-linked loop whose PR is now merged (Req 8).
+
+        The background half of the auto-heal story: the scheduled sweep re-verifies
+        each active obligation that references a GitHub PR and, for any PR the
+        Verifier confirms *merged*, closes the loop itself (``closure_kind=
+        autonomous``). The three-valued interlock inside
+        :meth:`ActionAgent.auto_close` leaves non-merged / unverifiable PRs
+        untouched, so this is safe to run on every sweep. Returns the closed
+        results (each carrying the healed obligation) so the caller can refresh
+        the affected members' App Home.
+        """
+        from loop.adjudicator.pr_ref import extract_pr_ref
+        from loop.graph.store import ObligationFilter
+
+        try:
+            active = self.graph.query(
+                ObligationFilter(
+                    loop_states=frozenset(
+                        {LoopState.BLOCKED_ON_YOU, LoopState.WAITING_ON_OTHER}
+                    )
+                )
+            )
+        except Exception:  # noqa: BLE001 — a sweep must never crash the scheduler.
+            logger.exception("auto-close reconciliation query failed")
+            return []
+
+        closed: list[Any] = []
+        for o in active:
+            # Only PR-referencing loops are auto-closable; skip the rest without
+            # spending a Verifier round-trip on them.
+            if not (o.artifact_ref and extract_pr_ref(o.artifact_ref)):
+                continue
+            try:
+                result = self.action.auto_close(o)
+            except Exception:  # noqa: BLE001 — one bad verify must not stop the rest.
+                logger.exception(
+                    "auto-close reconciliation failed for %s", o.obligation_id
+                )
+                continue
+            if getattr(result, "closed", False):
+                logger.info(
+                    "autonomously auto-closed %s (%s) after verified merge",
+                    o.obligation_id,
+                    o.artifact_ref,
+                )
+                closed.append(result)
+        return closed
 
     def on_message_event(self, event: dict[str, Any], client: Any = None) -> None:
         """Evaluate a live Slack message through the detection pipeline (Req 2.2)."""
@@ -1090,8 +1250,11 @@ class LoopApp:
         except Exception:  # noqa: BLE001
             logger.exception("live message evaluation failed")
             return
-        if results and client is not None:
-            self._refresh_home(client)
+        if client is not None:
+            # Only republish on a real graph change (see run_sweep).
+            affected = self._affected_members(results)
+            if affected:
+                self._refresh_home_for(affected, client)
 
     # ==================================================================
     # Daily digest (Req 11.1)
@@ -1141,14 +1304,16 @@ class LoopApp:
         """
         target = viewer or self.user_id
         avatars = self._avatars.resolve(people_in_reply(reply, target), client)
-        cards = self._settings.assistant_style == "cards"
         return build_assistant_blocks(
             reply,
             now=self._now(),
             user_id=target,
             avatars=avatars,
             style=self._settings.assistant_style,
-            chart=cards,
+            # The aging bar chart is a ``data_visualization`` block, which this
+            # workspace refuses — and a chat message can't degrade like the Home,
+            # so including it would drop the whole reply. Card rows carry the value.
+            chart=False,
         )
 
     def post_assistant_reply(
@@ -1250,6 +1415,20 @@ class LoopApp:
             thread_ts = thread.get("thread_ts")
             if not channel_id or not thread_ts:
                 return
+            # A short welcome opens the pane (redesign) before the suggestion
+            # chips — sets context and the trust line in one message.
+            try:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=(
+                        "I'm watching your open loops across your workspace. Ask me "
+                        "who's blocking you or what you owe — or tap a suggestion "
+                        "below. I can act on your behalf, and I always show you first."
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — the welcome is best-effort.
+                logger.debug("assistant welcome post failed", exc_info=True)
             try:
                 client.assistant_threads_setSuggestedPrompts(
                     channel_id=channel_id,
@@ -1257,16 +1436,16 @@ class LoopApp:
                     title="Ask Loop about your open loops",
                     prompts=[
                         {
-                            "title": "Who's blocked on me?",
+                            "title": "What am I blocking?",
                             "message": "Who's blocked on me right now?",
+                        },
+                        {
+                            "title": "Show my open loops",
+                            "message": "Show me all my open loops.",
                         },
                         {
                             "title": "What am I waiting on?",
                             "message": "What am I waiting on from others?",
-                        },
-                        {
-                            "title": "Nudge my oldest loop",
-                            "message": "Draft a nudge for my oldest open loop.",
                         },
                     ],
                 )
@@ -1282,7 +1461,7 @@ class LoopApp:
                 opened = client.views_open(
                     trigger_id=_trigger_id(body),
                     view=build_composer_status_modal(
-                        ":hourglass_flowing_sand: *Drafting your message…*\n"
+                        "*Drafting your message…*\n"
                         "Loop is writing it in your voice.",
                         title=title,
                     ),
@@ -1366,7 +1545,7 @@ class LoopApp:
             _open_composer(
                 body,
                 client,
-                lambda: self.prepare_cycle_modal(oid, actor),
+                lambda: self.prepare_cycle_modal(oid, actor, client),
                 title="Break the deadlock",
                 surface="deadlock",
             )
@@ -1420,8 +1599,7 @@ class LoopApp:
         @app.action(ACTION_REVIEW_BLOCKED)
         def _on_review_blocked(ack, body, client):  # noqa: ANN001
             ack()
-            result = self.handle_review_blocked(_user_of(body))
-            _post_dm(client, _user_of(body), result.text, result.blocks)
+            self.open_review_modal(_user_of(body), _trigger_id(body), client)
 
         @app.action(ACTION_CONFIRM_SEND)
         def _on_confirm(ack, body, client):  # noqa: ANN001
@@ -1726,7 +1904,7 @@ def _confirmation_blocks(
     shape so the DM thread reads as a clean activity log rather than a pile of plain
     text:
 
-      * a bold **status** section (e.g. "✅ *Nudge sent*"),
+      * a bold **status** section (e.g. "*Nudge sent*"),
       * an optional **quote** of the message that was posted (blockquoted),
       * an optional **context** subline (who · where · when), and
       * an optional one-tap **Undo** button for reversible actions.
@@ -1925,22 +2103,40 @@ def _build_draft(settings: Settings) -> Callable[[Obligation], str]:
     def _draft(obligation: Obligation) -> str:
         from loop.llm import chat
 
-        # A nudge reminds the debtor: address the *owes* endpoint. Slack renders
-        # <@ID> as their real name (and notifies them), so the model must not
-        # invent a name of its own.
-        other = obligation.owes_person_id or obligation.owed_person_id
-        mention = f"<@{other}>" if other else "there"
-        prompt = (
-            "Draft a brief, warm, professional Slack reminder (a 'polite nudge') "
-            "about an open commitment.\n"
-            f"Start by addressing the recipient exactly as {mention} — Slack "
-            "renders that as their name; do not use any other name. Reference the "
-            "subject naturally, note it has been a little while, and ask for an "
-            "update. 2–4 sentences, under 1000 characters. Output ONLY the message "
-            "text; do not invent names, channels, dates, links, or reference "
-            "lines.\n\n"
-            f"Subject: {obligation.subject_summary}\n"
-        )
+        from loop.action.app_home import nudge_recipient_id
+
+        # The recipient is always the *counterparty* (never the user): the person
+        # waiting on you (blocked-on-you) or the person who owes you
+        # (waiting-on-other). Slack renders <@ID> as their real name (and notifies
+        # them), so the model must not invent a name of its own.
+        recipient = nudge_recipient_id(obligation)
+        mention = f"<@{recipient}>" if recipient else "there"
+        if obligation.loop_state == LoopState.BLOCKED_ON_YOU:
+            # Your court: a proactive status *reply* to whoever is waiting on you —
+            # you own this, so acknowledge it and reassure them, don't ask them.
+            prompt = (
+                "Draft a brief, warm, professional Slack status update to someone who "
+                "is waiting on you for an open commitment (a proactive reply).\n"
+                f"Start by addressing them exactly as {mention} — Slack renders that "
+                "as their name; do not use any other name. Acknowledge that you own it, "
+                "reassure them it's in progress, and say you'll follow up shortly. 2-4 "
+                "sentences, under 1000 characters. Output ONLY the message text; do not "
+                "invent names, channels, dates, links, or reference lines.\n\n"
+                f"Subject: {obligation.subject_summary}\n"
+            )
+        else:
+            # Their court: a polite *nudge* to whoever owes you, asking for an update.
+            prompt = (
+                "Draft a brief, warm, professional Slack reminder (a 'polite nudge') "
+                "about an open commitment.\n"
+                f"Start by addressing the recipient exactly as {mention} — Slack "
+                "renders that as their name; do not use any other name. Reference the "
+                "subject naturally, note it has been a little while, and ask for an "
+                "update. 2-4 sentences, under 1000 characters. Output ONLY the message "
+                "text; do not invent names, channels, dates, links, or reference "
+                "lines.\n\n"
+                f"Subject: {obligation.subject_summary}\n"
+            )
         return chat(
             [{"role": "user", "content": prompt}],
             tier="smart",

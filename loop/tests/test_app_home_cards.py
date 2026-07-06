@@ -23,6 +23,9 @@ from loop.action.app_home import (
     HERO_ZERO_TEXT,
     build_app_home_compact_view,
     build_app_home_view,
+    build_nudge_modal,
+    nudge_action_label,
+    nudge_recipient_id,
 )
 from loop.graph.models import ClosureKind, LoopState, Obligation
 from loop.graph.sqlite_store import IN_MEMORY, SqliteObligationGraph
@@ -266,3 +269,80 @@ def test_compact_zero_state_is_celebratory() -> None:
     contexts = _blocks_of_type(view, "context")
     celebratory = contexts[0]["elements"][0]["text"]
     assert "auto-closed" in celebratory and "1" in celebratory
+
+
+# ---------------------------------------------------------------------------
+# Direction-aware send: Reply (your court) vs Nudge (their court), never self-addressed
+# ---------------------------------------------------------------------------
+def test_recipient_is_always_the_counterparty_never_the_user() -> None:
+    # Blocked-on-you: the send goes to whoever is *waiting on you* (owed), not you.
+    assert nudge_recipient_id(_blocked("B1")) == "U_OTHER"
+    # Waiting-on-other: the send goes to whoever *owes you* (owes).
+    assert nudge_recipient_id(_waiting("W1")) == "U_OWES"
+
+
+def test_action_label_is_reply_on_blocked_and_nudge_on_waiting() -> None:
+    assert nudge_action_label(_blocked("B1")) == "Reply"
+    assert nudge_action_label(_waiting("W1")) == "Nudge"
+
+
+def test_blocked_card_primary_button_reads_reply() -> None:
+    graph = _store()
+    graph.upsert(_blocked("B1"))
+    view = build_app_home_view(graph, now=NOW_ISO, user_id=USER, avatars=AVATARS, style="cards")
+    card = _blocks_of_type(view, "card")[0]
+    primary = card["actions"][0]
+    assert primary["action_id"] == ACTION_NUDGE  # same handler …
+    assert primary["text"]["text"] == "Reply"     # … relabeled by direction
+
+
+def test_waiting_card_primary_button_reads_nudge() -> None:
+    graph = _store()
+    graph.upsert(_waiting("W1"))
+    view = build_app_home_view(graph, now=NOW_ISO, user_id=USER, avatars=AVATARS, style="cards")
+    card = _blocks_of_type(view, "card")[0]
+    primary = card["actions"][0]
+    assert primary["action_id"] == ACTION_NUDGE
+    assert primary["text"]["text"] == "Nudge"
+
+
+def test_reply_modal_frames_blocked_as_reply_to_the_waiter() -> None:
+    modal = build_nudge_modal(_blocked("B1"), "draft text")
+    assert modal["title"]["text"] == "Send a reply"
+    lead = modal["blocks"][0]["text"]["text"]
+    assert "is waiting on you" in lead
+    assert "<@U_OTHER>" in lead  # the waiter, addressed
+
+
+def test_nudge_modal_frames_waiting_as_nudge_to_the_debtor() -> None:
+    modal = build_nudge_modal(_waiting("W1"), "draft text")
+    assert modal["title"]["text"] == "Send a nudge"
+    lead = modal["blocks"][0]["text"]["text"]
+    assert "You're waiting on" in lead
+    assert "<@U_OWES>" in lead  # the debtor, addressed
+
+
+# ---------------------------------------------------------------------------
+# Review-blocked modal (the on-screen summary the Review button now pops)
+# ---------------------------------------------------------------------------
+def test_review_modal_lists_blocked_loops_on_screen() -> None:
+    from loop.action.app_home import build_review_modal
+
+    graph = _store()
+    graph.upsert(_blocked("B1"))
+    graph.upsert(_blocked("B2"))
+    modal = build_review_modal(graph, NOW_ISO, USER)
+    assert modal["type"] == "modal"
+    assert modal["title"]["text"] == "Blocked on you"
+    s = str(modal)
+    assert "*2*" in s and "loops blocked on you" in s
+    assert "Subject B1" in s and "Subject B2" in s
+    assert "<@U_OTHER> is waiting" in s  # who's waiting, rendered as their name
+
+
+def test_review_modal_shows_all_clear_when_empty() -> None:
+    from loop.action.app_home import build_review_modal
+
+    modal = build_review_modal(_store(), NOW_ISO, USER)  # nothing blocked
+    assert modal["type"] == "modal"
+    assert "caught up" in str(modal).lower()

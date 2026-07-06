@@ -164,6 +164,7 @@ def _build_app(
     verifier_result=VerificationResult.UNRESOLVED,
     now=utc_now_iso,
     settings=None,
+    smart=_smart_user_owes,
 ) -> LoopApp:
     graph = SqliteObligationGraph(IN_MEMORY)
     verifier = FakeVerifier(verifier_result)
@@ -186,7 +187,7 @@ def _build_app(
         slack_send_as_user=send_as_user,
         draft=draft,
     )
-    adjudicator = Adjudicator(_smart_user_owes, graph)
+    adjudicator = Adjudicator(smart, graph)
     queue = AdjudicationQueue(adjudicator, USER)
     watcher = Watcher(
         graph,
@@ -307,6 +308,85 @@ def test_run_sweep_pipeline_writes_obligation(monkeypatch):
     assert len(client.published) == 1
 
 
+def _rts_one(ts: str):
+    """A stubbed RTS response carrying a single review request from OTHER."""
+    return {
+        "ok": True,
+        "results": {
+            "messages": [
+                {
+                    "channel_id": "C1",
+                    "message_ts": ts,
+                    "author_user_id": OTHER,
+                    "content": "can you review?",
+                    "permalink": "https://x",
+                }
+            ]
+        },
+    }
+
+
+def test_background_change_live_refreshes_the_affected_members_home():
+    """A detected loop refreshes *every* affected member's Home, not just the
+    tracked user — so a newly-caught loop appears without reopening the tab."""
+    app = _build_app()
+    client = FakeClient()
+    # OTHER has opened their Home at least once → a known live viewer.
+    app.open_home(OTHER, client)
+    baseline = len(client.published)
+
+    app.watcher._rts_client = lambda: _rts_one("1700000000.0002")  # type: ignore[attr-defined]
+    app.run_sweep(client)
+
+    refreshed = {p["user_id"] for p in client.published[baseline:]}
+    assert USER in refreshed  # tracked user (prior behaviour preserved)
+    assert OTHER in refreshed  # the counterparty's Home is live-refreshed too
+
+
+def test_background_change_never_publishes_to_a_member_without_a_live_home():
+    """Guard the rate-limited workspace: we only push to real openers, never to
+    seeded personas or third-party mentions that never installed the app."""
+    app = _build_app()
+    client = FakeClient()
+    # Nobody but the tracked user has opened a Home; OTHER is on the new edge
+    # but is not a known viewer, so views.publish must not be called for them.
+    app.watcher._rts_client = lambda: _rts_one("1700000000.0003")  # type: ignore[attr-defined]
+    app.run_sweep(client)
+
+    assert [p["user_id"] for p in client.published] == [USER]
+
+
+def test_discard_only_drain_never_republishes_home():
+    """A sweep that only discards candidates changed nothing, so it must not
+    call views.publish at all — no wasted publish on a rate-limited workspace."""
+
+    def _smart_not_a_loop(_c, *, user_id):  # noqa: ANN001
+        return SmartAdjudication(
+            is_loop=False,
+            involves_user=False,
+            direction=Direction.USER_OWES,
+            confidence=0.1,
+            subject_summary="",
+        )
+
+    app = _build_app(smart=_smart_not_a_loop)
+    client = FakeClient()
+    app.watcher._rts_client = lambda: _rts_one("1700000000.0004")  # type: ignore[attr-defined]
+    app.run_sweep(client)
+
+    assert app.graph.query(ObligationFilter()) == []  # nothing written
+    assert client.published == []  # and nothing republished
+
+
+def test_affected_members_are_both_endpoints_and_ignore_empty_results():
+    from types import SimpleNamespace
+
+    result = SimpleNamespace(obligation=_obligation())  # USER owes OTHER
+    assert LoopApp._affected_members([result]) == {USER, OTHER}
+    # DISCARDED/ERROR results carry no obligation → contribute nobody.
+    assert LoopApp._affected_members([SimpleNamespace(obligation=None)]) == set()
+
+
 # --------------------------------------------------------------------------- #
 # Autonomy boundaries — autonomous paths (Req 13.1)
 # --------------------------------------------------------------------------- #
@@ -407,7 +487,7 @@ def test_review_blocked_reports_all_clear_when_none_blocked():
     assert "caught up" in result.text.lower()
 
 
-def test_review_blocked_action_handler_acks_and_dms():
+def test_review_blocked_action_handler_acks_and_opens_modal():
     app = _build_app()
     app.graph.upsert(_obligation("o1", subject_summary="review the deck"))
     bolt = FakeBoltApp()
@@ -419,13 +499,16 @@ def test_review_blocked_action_handler_acks_and_dms():
     def ack():
         acked["v"] = True
 
-    body = {"user": {"id": USER}, "actions": [{"value": "review_blocked"}]}
+    body = {"user": {"id": USER}, "trigger_id": "T123", "actions": [{"value": "review_blocked"}]}
     bolt.actions[ACTION_REVIEW_BLOCKED](ack, body, client)
 
     assert acked["v"] is True
-    assert len(client.messages) == 1
-    assert client.messages[0]["channel"] == USER
-    assert "review the deck" in client.messages[0]["text"]
+    # The Review button now pops the summary on-screen (a modal), not a DM.
+    assert client.messages == []
+    assert len(client.opened_views) == 1
+    view = client.opened_views[0]["view"]
+    assert view["type"] == "modal"
+    assert "review the deck" in str(view)
 
 
 # --------------------------------------------------------------------------- #
@@ -754,3 +837,73 @@ def test_build_scheduler_registers_sweep_digest_and_timeout_jobs():
     sweep = scheduler.get_job("watcher_sweep")
     assert sweep.trigger.interval.total_seconds() == 30
     assert sweep.trigger.interval.total_seconds() <= 60
+
+
+# --------------------------------------------------------------------------- #
+# Autonomous auto-heal reconciliation (Req 8) — the sweep closes merged PR loops
+# --------------------------------------------------------------------------- #
+def _pr_loop(oid="p1", state=LoopState.BLOCKED_ON_YOU, ref="rajj28/loop-demo#2"):
+    return _obligation(
+        oid=oid,
+        state=state,
+        artifact_type=ArtifactType.GITHUB_PR,
+        artifact_ref=ref,
+    )
+
+
+def test_reconcile_auto_closes_merged_pr_loop():
+    # A verified merge (RESOLVED) heals the loop autonomously (closure_kind=autonomous).
+    app = _build_app(verifier_result=VerificationResult.RESOLVED)
+    app.graph.upsert(_pr_loop())
+
+    closed = app.reconcile_pr_closures()
+
+    assert len(closed) == 1
+    assert closed[0].closed is True
+    healed = app.graph.get("p1")
+    assert healed.loop_state == LoopState.HEALED
+
+
+def test_reconcile_leaves_unmerged_pr_loop_open():
+    # An open / unmerged PR (UNRESOLVED) must never be auto-closed (Req 8.3, 8.7).
+    app = _build_app(verifier_result=VerificationResult.UNRESOLVED)
+    app.graph.upsert(_pr_loop())
+
+    closed = app.reconcile_pr_closures()
+
+    assert closed == []
+    assert app.graph.get("p1").loop_state == LoopState.BLOCKED_ON_YOU
+
+
+def test_reconcile_forbids_close_on_unverified_pr():
+    # Transport failure (UNVERIFIED) forbids closing on an unknown state (Req 8.4, 8.6).
+    app = _build_app(verifier_result=VerificationResult.UNVERIFIED)
+    app.graph.upsert(_pr_loop())
+
+    assert app.reconcile_pr_closures() == []
+    assert app.graph.get("p1").loop_state == LoopState.BLOCKED_ON_YOU
+
+
+def test_reconcile_ignores_loops_without_a_pr_ref():
+    # A merged verdict can't close a loop that references no PR — it's skipped
+    # entirely (no Verifier round-trip, no state change).
+    app = _build_app(verifier_result=VerificationResult.RESOLVED)
+    app.graph.upsert(_obligation(oid="nopr"))  # no artifact_ref
+
+    assert app.reconcile_pr_closures() == []
+    assert app.graph.get("nopr").loop_state == LoopState.BLOCKED_ON_YOU
+
+
+def test_run_sweep_auto_heals_and_refreshes_home():
+    # The money moment, wired: a scheduled sweep verifies the merge and the loop
+    # closes itself, and the affected members' App Home is republished.
+    app = _build_app(verifier_result=VerificationResult.RESOLVED)
+    app.graph.upsert(_pr_loop())
+    # Only known Home viewers get a proactive refresh; register both endpoints.
+    app._home_viewers.update({USER, OTHER})
+    client = FakeClient()
+
+    app.run_sweep(client)
+
+    assert app.graph.get("p1").loop_state == LoopState.HEALED
+    assert client.published, "auto-heal should republish the affected App Home"
