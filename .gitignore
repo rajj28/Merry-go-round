@@ -2,10 +2,14 @@
 .env
 loop/.env
 
-# Embedded Obligation Graph store.
+# Embedded Obligation Graph store (and local backups).
 *.db
+*.db.*
 *.sqlite
 *.sqlite3
+
+# Local demo/submission working docs — not part of the project.
+VIDEO_BRIEF*.md
 
 # Claude internal session/memory files (not part of the app).
 *.jsonl
