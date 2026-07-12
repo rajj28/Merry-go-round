@@ -12,9 +12,9 @@ sections actually rendered in the view*. Concretely, for any graph state, each
 footer count equals the number of non-dismissed at/above-threshold obligations
 rendered in its corresponding section:
 
-  * "Blocked on you: *N*"      == rows rendered under the 🔴 Blocked on You header,
-  * "Waiting on others: *M*"   == rows rendered under the ⏳ Waiting on Others header,
-  * "Auto-healed: *K*"         == rows rendered under the 🤖 Auto-Healed Loops header.
+  * "Blocked on you: *N*"      == rows rendered under the Blocked on You header,
+  * "Waiting on others: *M*"   == rows rendered under the Waiting on Others header,
+  * "Auto-healed: *K*"         == rows rendered under the Auto-Healed Loops header.
 
 The footer count is parsed back out of the rendered footer block and the per-section
 row counts are derived by walking the rendered ``blocks`` list — so the test pins the

@@ -61,6 +61,19 @@ class LoopState(str, Enum):
     HEALED = "healed"                        # resolved / closed
 
 
+class ObligationKind(str, Enum):
+    """What sort of open loop an Obligation is.
+
+    ``reply`` is the classic owed response/deliverable. ``meeting`` is a proposed
+    meeting ("let's meet tomorrow at 4 PM") — the loop stays open until the other
+    party confirms; ``due_at`` carries the proposed time. The default is ``reply``
+    so every pre-existing obligation and caller keeps its exact behaviour.
+    """
+
+    REPLY = "reply"
+    MEETING = "meeting"
+
+
 class ClosureKind(str, Enum):
     """How an Obligation reached the ``healed`` state.
 
@@ -92,6 +105,7 @@ class FeedbackPolarity(str, Enum):
 # Convenience frozensets for callers that need to validate raw strings without
 # importing the enums (e.g. the store's reject path, task 3).
 LOOP_STATE_VALUES: frozenset[str] = frozenset(s.value for s in LoopState)
+OBLIGATION_KIND_VALUES: frozenset[str] = frozenset(s.value for s in ObligationKind)
 CLOSURE_KIND_VALUES: frozenset[str] = frozenset(s.value for s in ClosureKind)
 ARTIFACT_TYPE_VALUES: frozenset[str] = frozenset(s.value for s in ArtifactType)
 FEEDBACK_POLARITY_VALUES: frozenset[str] = frozenset(s.value for s in FeedbackPolarity)
@@ -173,6 +187,16 @@ class Obligation(SQLModel, table=True):
     source_msg_channel: str = Field(description="Slack channel id of the source message")
     source_msg_ts: str = Field(description="Slack ts of the source message")
     subject_summary: str = Field(description="LLM summary of the loop")
+
+    # --- kind / schedule ------------------------------------------------------
+    kind: ObligationKind = Field(
+        default=ObligationKind.REPLY,
+        description="reply (owed response) | meeting (proposed meeting)",
+    )
+    due_at: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 UTC proposed/committed time (meetings), or null",
+    )
 
     # --- surfacing control --------------------------------------------------
     dismissed: bool = Field(
@@ -280,11 +304,13 @@ __all__ = [
     "EventId",
     # enums
     "LoopState",
+    "ObligationKind",
     "ClosureKind",
     "ArtifactType",
     "FeedbackPolarity",
     # value sets / constants
     "LOOP_STATE_VALUES",
+    "OBLIGATION_KIND_VALUES",
     "CLOSURE_KIND_VALUES",
     "ARTIFACT_TYPE_VALUES",
     "FEEDBACK_POLARITY_VALUES",

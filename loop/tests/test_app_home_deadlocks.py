@@ -15,7 +15,6 @@ from loop.action.app_home import (
     build_app_home_view,
     build_cycle_modal,
     chain_pressure_text,
-    deadlock_graph_url,
     deadlock_ring_text,
     impact_stats_text,
     learn_text,
@@ -128,30 +127,25 @@ def test_deadlock_ring_text_uses_display_names() -> None:
     )
 
 
-def test_deadlock_card_carries_the_ring_diagram() -> None:
+def test_deadlock_ring_text_renders_a_mutual_pair_with_a_double_arrow() -> None:
+    # A 2-person deadlock reads "Alice ⇄ Bob", not the clumsy "Alice → Bob → Alice".
+    names = {"A": "Alice", "B": "Bob"}
+    assert deadlock_ring_text(("A", "B"), names) == "Alice ⇄ Bob"
+
+
+def test_deadlock_card_shows_the_ring_as_text_not_a_graph_image() -> None:
+    # The circular graph image was removed (it scales badly with org size);
+    # the ring must still be legible, rendered as a text section, and no
+    # external graphviz image is fetched. A tracked edge keeps us off the
+    # first-run onboarding (which has its own pipeline diagram).
     graph = _store()
+    graph.upsert(_edge("B1", USER, "U_OTHER", state=LoopState.BLOCKED_ON_YOU))
     view = build_app_home_view(
         graph, now=NOW, user_id=USER, break_plans=_ring_plans()
     )
-    images = [b for b in view["blocks"] if b.get("type") == "image"]
-    diagram = next(
-        b for b in images if str(b.get("alt_text", "")).startswith("Deadlock:")
-    )
-    assert "quickchart.io/graphviz" in diagram["image_url"]
-    assert diagram["alt_text"] == "Deadlock: A → B → C → A"
-    assert diagram["title"]["text"] == "A → B → C → A"
-
-
-def test_deadlock_graph_url_highlights_the_break_edge() -> None:
-    (plan,) = _ring_plans()
-    names = {"A": "Alice", "B": "Bob", "C": "Carol"}
-    url = deadlock_graph_url(plan, names)
-    assert url.startswith("https://quickchart.io/graphviz?")
-    assert "%23E01E5A" in url  # the Slack-red break edge
-    assert "start%20here" in url  # ...labeled as the first move
-    assert "Alice" in url and "Bob" in url and "Carol" in url
-    # Deterministic: same plan, same URL.
-    assert url == deadlock_graph_url(plan, names)
+    assert "A → B → C → A" in str(view)  # ring still legible
+    assert not [b for b in view["blocks"] if b.get("type") == "image"]
+    assert "quickchart.io/graphviz" not in str(view)
 
 
 def test_build_cycle_modal_reuses_the_composer_contract() -> None:
@@ -235,6 +229,22 @@ def test_impact_stats_counts_week_window_and_people() -> None:
     assert "2 loops auto-healed" in text
     assert "1 in the last 7 days" in text
     assert "2 people unblocked" in text
+
+
+def test_impact_stats_singular_grammar_for_a_count_of_one() -> None:
+    healed = [
+        _edge(
+            "h1",
+            USER,
+            "B",
+            state=LoopState.HEALED,
+            closure_kind=ClosureKind.AUTONOMOUS,
+            closure_timestamp="2025-01-07T12:00:00+00:00",
+        )
+    ]
+    text = impact_stats_text(healed, NOW)
+    assert "1 loop auto-healed" in text  # not "1 loops"
+    assert "1 person unblocked" in text  # not "1 people"
 
 
 def test_first_run_onboarding_renders_only_on_an_untracked_graph() -> None:

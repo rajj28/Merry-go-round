@@ -30,6 +30,11 @@ from loop.action.app_home import (
     BLOCKED_SECTION_TITLE,
     WAITING_SECTION_TITLE,
     HEALED_SECTION_TITLE,
+    HERO_TAGLINE,
+    BLOCKED_SECTION_DESCRIPTOR,
+    WAITING_SECTION_DESCRIPTOR,
+    HEALED_SECTION_DESCRIPTOR,
+    OBLIGATION_ZERO_BODY,
     BLOCKED_EMPTY_TEXT,
     WAITING_EMPTY_TEXT,
     HEALED_EMPTY_TEXT,
@@ -50,7 +55,7 @@ from loop.action.app_home import (
     slack_date,
     waiting_on_other_rows,
 )
-from loop.graph.models import ClosureKind, LoopState, Obligation
+from loop.graph.models import ArtifactType, ClosureKind, LoopState, Obligation
 from loop.graph.sqlite_store import IN_MEMORY, SqliteObligationGraph
 
 # Fixed reference "now" so every age/aging assertion is deterministic.
@@ -118,15 +123,17 @@ def test_aging_chip_uses_last_touch_relative_to_now() -> None:
     # 48h old → squarely in the warning band.
     chip = aging_chip(_obligation("OB", last_touch_timestamp=_ago(48)), NOW)
     assert chip.state is AgingState.WARNING
-    assert chip.emoji == "🟡"
     assert chip.age_text == "2d"
+    assert chip.text == "2d"  # plain age, no emoji cue
 
 
-def test_aging_chip_fresh_and_overdue_emoji() -> None:
+def test_aging_chip_fresh_and_overdue_states() -> None:
     fresh = aging_chip(_obligation("F", last_touch_timestamp=_ago(1)), NOW)
     overdue = aging_chip(_obligation("O", last_touch_timestamp=_ago(100)), NOW)
-    assert fresh.state is AgingState.FRESH and fresh.emoji == "🟢"
-    assert overdue.state is AgingState.OVERDUE and overdue.emoji == "🔴"
+    assert fresh.state is AgingState.FRESH
+    assert overdue.state is AgingState.OVERDUE
+    # No emoji anywhere in the rendered chip text.
+    assert fresh.text == fresh.age_text and overdue.text == overdue.age_text
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +380,7 @@ def _healed(oid: str, **overrides) -> Obligation:
 def _healed_section_texts(view: dict) -> list[str]:
     """The Auto-Healed feed rows in a built view, each as headline + timeline subline.
 
-    Each feed row renders a mrkdwn ``section`` headline (``✅ {person} — {reason}``)
+    Each feed row renders a mrkdwn ``section`` headline (``Resolved with {person} — {reason}``)
     immediately followed by a ``context`` timeline subline (the native closure time
     plus the "Loop closed this automatically" attribution). This helper walks the
     Auto-Healed span — bounded so the trailing footer divider + footer context are
@@ -579,21 +586,59 @@ def test_hero_stats_line_reports_total_loops_and_native_updated_time() -> None:
 # ---------------------------------------------------------------------------
 # Active rows carry the source channel as a native channel mention
 # ---------------------------------------------------------------------------
-def _row_section_texts(view: dict, section_title: str) -> list[str]:
-    """The mrkdwn row section texts rendered under ``section_title`` before its actions."""
+def _section_segment(view: dict, section_title: str) -> list[dict]:
+    """The blocks rendered under ``section_title`` up to the next header."""
     blocks = view["blocks"]
     start = next(
         i
         for i, b in enumerate(blocks)
         if b["type"] == "header" and b["text"]["text"] == section_title
     )
-    texts: list[str] = []
+    seg: list[dict] = []
     for b in blocks[start + 1 :]:
         if b["type"] == "header":
             break
+        seg.append(b)
+    return seg
+
+
+def _row_section_texts(view: dict, section_title: str) -> list[str]:
+    """Each row's full text: the subject ``section`` plus its meta ``context`` line.
+
+    A row now renders as a subject section followed by a compact context line
+    (small avatar + counterparty · age · channel), so the "row text" a test cares
+    about is the two joined.
+    """
+    seg = _section_segment(view, section_title)
+    out: list[str] = []
+    for i, b in enumerate(seg):
         if b["type"] == "section" and b.get("text", {}).get("type") == "mrkdwn":
-            texts.append(b["text"]["text"])
-    return texts
+            row = b["text"]["text"]
+            if i + 1 < len(seg) and seg[i + 1]["type"] == "context":
+                ctx = " ".join(
+                    e.get("text", "")
+                    for e in seg[i + 1]["elements"]
+                    if e.get("type") == "mrkdwn"
+                )
+                row = f"{row}\n{ctx}"
+            out.append(row)
+    return out
+
+
+def _row_avatar_url(view: dict, section_title: str, index: int = 0) -> str | None:
+    """The small avatar's image URL from the context line under the ``index``-th row."""
+    seg = _section_segment(view, section_title)
+    sections = [
+        i
+        for i, b in enumerate(seg)
+        if b["type"] == "section" and b.get("text", {}).get("type") == "mrkdwn"
+    ]
+    si = sections[index]
+    if si + 1 < len(seg) and seg[si + 1]["type"] == "context":
+        for e in seg[si + 1]["elements"]:
+            if e.get("type") == "image":
+                return e.get("image_url")
+    return None
 
 
 def test_blocked_row_shows_counterparty_and_source_channel_mention() -> None:
@@ -671,37 +716,35 @@ def _row_sections(view: dict, section_title: str) -> list[dict]:
     return out
 
 
-def test_row_has_avatar_accessory_when_avatar_url_supplied() -> None:
+def test_row_has_small_avatar_in_the_context_line_when_supplied() -> None:
     graph = _store()
     graph.upsert(_obligation("B1", owed_person_id="U_BOB"))
     avatars = {"U_BOB": "https://avatars.example.com/bob_72.png"}
     view = build_app_home_view(graph, NOW_ISO, avatars=avatars)
-    section = _row_sections(view, BLOCKED_SECTION_TITLE)[0]
-    accessory = section.get("accessory")
-    assert accessory is not None
-    assert accessory["type"] == "image"
-    assert accessory["image_url"] == "https://avatars.example.com/bob_72.png"
-    assert accessory["alt_text"] == "U_BOB"
+    # Avatar now rides the row's context line (small ~20px), not a big accessory.
+    assert _row_avatar_url(view, BLOCKED_SECTION_TITLE) == "https://avatars.example.com/bob_72.png"
+    # ...and never as a large section accessory.
+    assert "accessory" not in _row_sections(view, BLOCKED_SECTION_TITLE)[0]
 
 
-def test_row_has_no_accessory_when_no_avatar_supplied() -> None:
+def test_row_has_no_avatar_when_none_supplied() -> None:
     graph = _store()
     graph.upsert(_obligation("B1", owed_person_id="U_BOB"))
-    # No avatars map at all → graceful, no accessory.
+    # No avatars map at all → graceful, no avatar image anywhere.
     view = build_app_home_view(graph, NOW_ISO)
+    assert _row_avatar_url(view, BLOCKED_SECTION_TITLE) is None
     assert "accessory" not in _row_sections(view, BLOCKED_SECTION_TITLE)[0]
-    # An avatars map missing this person → still no accessory.
+    # An avatars map missing this person → still no avatar.
     view2 = build_app_home_view(graph, NOW_ISO, avatars={"U_SOMEONE_ELSE": "https://x/y.png"})
-    assert "accessory" not in _row_sections(view2, BLOCKED_SECTION_TITLE)[0]
+    assert _row_avatar_url(view2, BLOCKED_SECTION_TITLE) is None
 
 
-def test_healed_row_has_avatar_accessory_when_supplied() -> None:
+def test_healed_row_has_small_avatar_in_the_context_line_when_supplied() -> None:
     graph = _store()
     graph.upsert(_healed("H1", owed_person_id="U_BOB"))
     avatars = {"U_BOB": "https://avatars.example.com/bob_72.png"}
     view = build_app_home_view(graph, NOW_ISO, user_id="U_USER", avatars=avatars)
-    section = _row_sections(view, HEALED_SECTION_TITLE)[0]
-    assert section.get("accessory", {}).get("image_url") == "https://avatars.example.com/bob_72.png"
+    assert _row_avatar_url(view, HEALED_SECTION_TITLE) == "https://avatars.example.com/bob_72.png"
 
 
 def test_logo_block_prepended_when_logo_url_set_and_hero_follows() -> None:
@@ -721,3 +764,79 @@ def test_no_logo_block_when_logo_url_absent_keeps_hero_as_block_zero() -> None:
     view = build_app_home_view(graph, NOW_ISO)  # default: no logo
     assert view["blocks"][0]["type"] == "header"
     assert all(b["type"] != "image" for b in view["blocks"])
+
+
+# ---------------------------------------------------------------------------
+# Design adoption: tagline, section descriptors, View-message links, GitHub tag
+# ---------------------------------------------------------------------------
+def test_home_shows_section_descriptors_but_not_the_marketing_tagline() -> None:
+    graph = _store()
+    graph.upsert(_obligation("B1"))  # any tracked loop ends the first-run state
+    text = str(build_app_home_view(graph, NOW_ISO, user_id="U_USER"))
+    # The redesign dropped the marketing tagline from the daily view for focus.
+    assert HERO_TAGLINE not in text
+    assert BLOCKED_SECTION_DESCRIPTOR in text
+    assert WAITING_SECTION_DESCRIPTOR in text
+    assert HEALED_SECTION_DESCRIPTOR in text
+
+
+def test_obligation_zero_payoff_shows_when_nothing_open_but_history_exists() -> None:
+    graph = _store()
+    graph.upsert(
+        _obligation(
+            "H",
+            owes_person_id="U_OTHER",
+            owed_person_id="U_USER",
+            loop_state=LoopState.HEALED,
+            closure_kind=ClosureKind.AUTONOMOUS,
+            closure_timestamp=_ago(2),
+            closure_reason="PR merged",
+        )
+    )
+    text = str(build_app_home_view(graph, NOW_ISO, user_id="U_USER", show_impact=True))
+    assert OBLIGATION_ZERO_BODY in text  # the calm payoff line
+    assert HEALED_SECTION_TITLE in text  # ...proof still browsable below
+
+
+def test_greeting_eyebrow_renders_above_the_hero_when_the_viewer_name_is_known() -> None:
+    graph = _store()
+    graph.upsert(_obligation("B1"))
+    view = build_app_home_view(graph, NOW_ISO, user_id="U_USER", viewer_name="Ruturaj")
+    first = view["blocks"][0]
+    assert first["type"] == "context"
+    assert "Ruturaj" in first["elements"][0]["text"]
+    # Absent (header stays block[0]) when no name resolved — the test invariant.
+    plain = build_app_home_view(graph, NOW_ISO, user_id="U_USER")
+    assert plain["blocks"][0]["type"] == "header"
+
+
+def test_active_rows_carry_a_view_message_permalink() -> None:
+    graph = _store()
+    graph.upsert(_obligation("B1", source_msg_channel="C9", source_msg_ts="1783.55"))
+    text = str(build_app_home_view(graph, NOW_ISO, user_id="U_USER"))
+    # Slack archive permalink: /archives/{channel}/p{ts without the dot}
+    assert "https://slack.com/archives/C9/p178355" in text
+    assert "View message" in text
+
+
+def _healed_pr(oid: str, *, is_pr: bool) -> Obligation:
+    return _obligation(
+        oid,
+        owes_person_id="U_OTHER",
+        owed_person_id="U_USER",
+        loop_state=LoopState.HEALED,
+        closure_kind=ClosureKind.AUTONOMOUS,
+        closure_timestamp=_ago(2),
+        closure_reason="PR merged" if is_pr else "replied",
+        artifact_type=ArtifactType.GITHUB_PR if is_pr else None,
+    )
+
+
+def test_healed_row_tags_github_verified_only_for_pr_closures() -> None:
+    graph = _store()
+    graph.upsert(_healed_pr("H_PR", is_pr=True))
+    graph.upsert(_healed_pr("H_CHAT", is_pr=False))
+    text = str(build_app_home_view(graph, NOW_ISO, user_id="U_USER"))
+    assert "verified via GitHub" in text  # the PR-grounded closure carries the tag
+    # ...but it is not slapped on every auto-closed row.
+    assert text.count("verified via GitHub") == 1

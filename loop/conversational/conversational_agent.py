@@ -78,6 +78,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field, replace
+
+from loop.emoji_utils import strip_emoji
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Callable, Optional, Union
@@ -670,9 +672,14 @@ class ConversationalAgent:
         failure it transparently falls back to the parser path below.
         """
         if self._planner is not None:
-            return self._handle_with_plan(user, text)
-        parsed = self._parser(text)
-        return self._dispatch_parsed(user, parsed)
+            reply = self._handle_with_plan(user, text)
+        else:
+            reply = self._dispatch_parsed(user, self._parser(text))
+        # Keep the chat emoji-free: the planner/answerer prose can carry emoji.
+        # (Draft text is stripped upstream in ``draft_polite_nudge``.)
+        if reply.text:
+            reply = replace(reply, text=strip_emoji(reply.text))
+        return reply
 
     def _dispatch_parsed(
         self,

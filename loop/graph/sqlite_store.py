@@ -119,11 +119,39 @@ class SqliteObligationGraph(ObligationGraph):
 
         # Materialize the schema from the frozen SQLModel metadata (task 2.1).
         SQLModel.metadata.create_all(self._engine)
+        self._migrate_additive_columns()
 
         # Recorded boundary-violation error indications (Req 14.6). Every refused
         # out-of-boundary destination appends a structured record here so the
         # rejection is observable, not just raised-and-lost.
         self._boundary_violations: list[GraphError] = []
+
+    def _migrate_additive_columns(self) -> None:
+        """Add columns that postdate an existing database file (additive only).
+
+        ``create_all`` never alters an existing table, so a database created before
+        the meeting-loop fields shipped would be missing ``kind`` / ``due_at``. Each
+        missing column is added with the model's default so old rows keep behaving
+        as classic reply loops.
+        """
+        from sqlalchemy import text
+
+        additions = {
+            "kind": "ALTER TABLE obligation ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'REPLY'",
+            "due_at": "ALTER TABLE obligation ADD COLUMN due_at VARCHAR",
+        }
+        try:
+            with self._engine.connect() as conn:
+                existing = {
+                    row[1]
+                    for row in conn.execute(text("PRAGMA table_info(obligation)"))
+                }
+                for column, ddl in additions.items():
+                    if column not in existing:
+                        conn.execute(text(ddl))
+                conn.commit()
+        except Exception:  # noqa: BLE001 — a failed migration surfaces on first write.
+            logger.exception("additive column migration failed")
 
     # ------------------------------------------------------------------
     # Writes

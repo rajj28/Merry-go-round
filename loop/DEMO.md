@@ -159,29 +159,110 @@ On boot the app seeds the Northwind org into the live graph with timestamps reba
 > Narration (**SAY**) is verbatim VO you can read. **SHOW** is exactly what's on screen / what to click.
 
 ### Beat 1 — The hook (0:00–0:20)
-- **SHOW:** Open cold on the App Home. Header reads **"3 people are blocked on you."** Hold still 2 seconds. Slowly scroll the carousel one card.
-- **SAY:** *"This is Slack. It's very good at telling you about messages. It has never once told you what you actually owe other people. Loop does — and notice, I didn't tag or flag a single thing. It found these on its own."*
+- **SHOW:** Open cold on the App Home. Header reads **"3 people are blocked on you."** Hold still 2 seconds. Slowly scroll the carousel one card, showing:
+  - Person's name and avatar (rich visual identity)
+  - The specific obligation ("blocked on you merging PR", "waiting for your feedback", etc.)
+  - Confidence score (how certain Loop is about this obligation)
+  - Quick-action buttons (Nudge, Snooze, Dismiss, Details)
+- **SAY:** *"This is Slack. It's very good at telling you about messages. It has never once told you what you actually owe other people. Loop does — and notice, I didn't tag or flag a single thing. It found these on its own. Every card here is auto-detected from your workspace using AI reasoning to figure out whose court the ball is in."*
+- **Highlight:** The **confidence threshold** filtering at work — Loop shows only high-confidence obligations, keeping noise out.
 
 ### Beat 2 — How it knows (0:20–1:10) — proves all 3 techs in one shot
-- **SHOW:** Click into the **Loop Assistant** pane. Type: **`who is blocked on me?`** Send. When the reply renders, hover/point at the context line: **"Loop's reasoning: Searched workspace → Verified GitHub."**
-- **SAY:** *"When I ask Loop a question, it plans which tools to use and shows its work. It swept the whole workspace with Slack's Real-Time Search, used AI to reason about whose court each ball is in, and checked GitHub through MCP — live. That trace is the real record of what the agent did, not a canned string."*
+- **SHOW:** Click into the **Loop Assistant** pane. Type: **`who is blocked on me?`** (or similar natural language query). Send. When the reply renders, show:
+  - The **tool-use trace** showing real execution: "Searched workspace with Slack RTS → Verified GitHub status → Reasoned with LLM"
+  - Each tool invocation showing inputs and outputs (what was searched, which PRs were checked, etc.)
+  - The **reasoning explanation** for each obligation (e.g., "Alice is blocked because Bob hasn't merged the backend-refactor PR")
+  - Hover/point at the context line: **"Loop's reasoning: Searched workspace → Verified GitHub."**
+- **SAY:** *"When I ask Loop a question, it plans which tools to use and shows its work. It swept the whole workspace with Slack's Real-Time Search API, used AI to reason about whose court each ball is in, and checked GitHub through MCP — live. That trace you see is the real record of what the agent did, not a canned string. The LLM is reasoning in real time, and I can see every step. This is agentic reasoning — not a chatbot, an actual decision-making loop."*
+- **Deep dive:** Optionally ask a follow-up like **"What should I do about Alice's block?"** to show the conversational continuity and the agent's ability to maintain context and provide next-step guidance.
+- **Highlight:** The **reasoning transparency** — this is why you can trust the agent's output; you can see exactly what it checked.
 
 ### Beat 3 — Acting as you (1:10–1:55)
-- **SHOW:** Back on **Home**. On Alice's card, click **Nudge**. The composer **modal** opens with an AI-written message pre-filled. Edit one word (e.g., add "thanks!"). Click **Send as you**. Then open the Loop DM to show the **"✅ Nudge sent"** confirmation card with the quoted message.
-- **SAY:** *"If someone's been waiting, Loop drafts the nudge for me — in my voice — and sends it as me, but only after one tap. I'm always in control. And every action leaves a clean record."*
-- **Optional:** Show the hero **"Nudge someone who's waiting…" dropdown** and pick a person — *"or I can nudge anyone in one click."*
+**Part A: The Polite Nudge**
+- **SHOW:** Back on **Home**. On Alice's card, click **Nudge**. The composer **modal** opens with:
+  - An AI-drafted message pre-filled in Alice's voice (polite, specific to her context, ≤1000 chars)
+  - The subject line and context visible above (so you know what it's about)
+  - A text field where you can edit, add tone, personalize, or completely rewrite
+  - A **"Send as you"** button (one-tap confirm)
+- **SAY:** *"If someone's been waiting, Loop drafts the nudge for me — in my voice, tailored to the context — and I can edit it in one second. Then one tap sends it as me. I'm always in control. This is AI applied properly: it saves me the 10-second cognitive lift of starting from a blank page, but I'm never bypassed."*
+- **Edit example:** Make a small visible edit (e.g., change "thanks" to "thanks so much!" or add an emoji) to show that it's not canned.
+- **SHOW:** Click **Send as you**. Then open the Loop DM to show the **"✅ Nudge sent"** confirmation card with:
+  - The quoted nudge text you just sent
+  - Timestamp of when it was sent
+  - The recipient and channel it was sent to
+
+**Part B: One-Tap Actions & Quick Affordances**
+- **Optional flow:** Show the hero **"Nudge someone who's waiting…" dropdown** at the top of Home and pick a different person to send to — *"or I can nudge anyone in one click, even if they haven't surfaced yet."*
+- **Optional:** Show **Dismiss** and **Snooze** buttons on a card to demonstrate the other quick actions (dismiss = "I handled this elsewhere", snooze = "remind me later")
+- **SAY:** *"Every action leaves a clean record. Loop learns from your confirmations and dismissals — if you keep dismissing certain types of loops, it tunes its confidence threshold automatically."*
 
 ### Beat 4 — The magic: auto-heal (1:55–2:35) — THE moment
-- **SHOW:** Point at Bob's card: **"Bob is blocked on you merging the widgets PR."** Cut to a GitHub tab; **merge** `rajj28/loop-demo#2`. Cut back to the Loop Home; within a sweep the card **leaves the "Blocked on you" carousel and appears under "Recently auto-closed."**
-- **SAY:** *"Here's the part I love. Bob's blocked on a pull request. Watch what happens when I actually merge it. Loop verifies the merge through GitHub MCP, and closes the loop itself — I never touched the dashboard. The work being done is what resolves it."*
+- **SHOW:** Point at Bob's card: **"Bob is blocked on you merging the widgets PR."** Highlight the PR reference link embedded in the obligation. Cut to a GitHub tab; **merge** `rajj28/loop-demo#2`. Cut back to the Loop Home; within 1–2 seconds the card **leaves the "Blocked on you" carousel and appears under "Recently auto-closed"** with:
+  - The closure timestamp (when Loop detected the merge)
+  - A **"✓ Verified & Auto-Closed"** badge
+  - The PR link showing it's now merged
+  - A note in the card: "Loop verified GitHub merge"
+- **SAY:** *"Here's the part I love. Bob's blocked on a pull request. Watch what happens when I actually merge it. Loop verifies the merge through GitHub MCP — not me manually marking it done. It detects the *real work being done*, and closes the loop itself. I never touched the dashboard. The work being done is what resolves it."*
+- **Deeper:** *"This is the hardest engineering problem: how do you know when real work is complete without a human flag? Loop uses the Verifier — a three-valued logic engine. It checks: is this PR **definitely** merged (green), **definitely** open (red), or **unknown** (gray)? Only definite merges trigger auto-close. Never guesses, never false-positives."*
+- **Highlight:** The **autonomous closure** — no user action needed, no confirmation dialog, no friction. The agent acts as you would act. This is trust-earned through transparency.
 
 ### Beat 5 — The payoff (2:35–3:00)
-- **SHOW:** Dismiss/close the remaining blocked loops (or cut to the seeded zero-state) so the header reads **"You're all caught up"** with the celebratory line *"🎉 Loop auto-closed 5 loops for you."*
-- **SAY:** *"Loop turns invisible work debt into a calm, self-healing list. No new app to check, no manual tagging — it just lives in Slack and keeps your court clear. That's the next era of productivity."*
+- **SHOW:** Dismiss/close the remaining blocked loops (or cut to the seeded zero-state) so the header reads **"You're all caught up"** with the celebratory line *"🎉 Loop auto-closed 5 loops for you."* Then scroll to show:
+  - The **"Recently auto-closed"** section with a list of all resolved obligations, newest first
+  - Each entry showing the person, what was done, and when (e.g., "Alice — PR merged 2 mins ago")
+  - The **Learn feedback loop** in action: Loop tracks which obligations you resolved vs. dismissed vs. snoozed, and the feedback tunes the surfacing confidence threshold
+  - Optional: Show a **history/audit log** where you can see the full record of actions (nudges sent, loops auto-closed, etc.) with timestamps
+- **SAY:** *"Loop turns invisible work debt into a calm, self-healing list. No new app to check. No manual tagging. No spam. It just lives in Slack, stays in the background, and keeps your court clear. And the more you use it, the smarter it gets about what actually matters to you. That's the next era of productivity tools — agents that do the work, not tools that ask you to do more work."*
+- **Highlight:** The **auto-healed feed** is proof of autonomy; every entry here was closed without you lifting a finger. The **Learn loop** shows that Loop is actively tuning itself to your workflow.
 
 ---
 
-## 6. De-risk the magic moment (single biggest execution risk)
+## 5.1 Feature map across the beats
+
+Each beat showcases a specific cluster of Loop's capabilities:
+
+| Feature | Beat | What it does | Why it matters |
+|---------|------|-------------|---|
+| **Obligation Detection** | 1 | Watcher + Adjudicator scan workspace, LLM reasons about who owes whom | Zero-friction entry; no manual tagging |
+| **Confidence Scoring** | 1 | Each obligation has a confidence score; only high-confidence items surface | Precision reduces false positives; threshold tunes from Learn feedback |
+| **Rich Card UI** | 1 | Name, avatar, specific obligation, quick-action buttons | Scanning 3 cards takes 2 seconds; information density matters |
+| **Smart Assistant (Conversational Agent)** | 2 | Ask plain-language questions; agent plans which tools to use | Natural interface; mirrors how humans think ("who's blocked on me?") |
+| **Tool-Use Transparency** | 2 | Every assistant response shows reasoning trace: which tools ran, what they found | Trust comes from transparency; you can audit the logic |
+| **Slack RTS Integration** | 2 | Watcher uses Slack's Real-Time Search API to sweep workspace | Real data = real detection; not an estimate or ML hallucination |
+| **GitHub MCP Verification** | 2, 4 | Verifier checks PR status live via GitHub MCP | Ground truth; no guessing about GitHub state |
+| **Polite Nudge Drafting** | 3 | AI writes a contextual, respectful nudge; you edit and confirm | Saves cognitive load; you keep full control |
+| **Send-as-You** | 3 | Nudge is sent as you in the source channel, with one-tap confirm | Autonomous but not autocratic; you approve before sending |
+| **Action Confirmation** | 3 | Loop DM shows confirmation cards for all sent nudges | Audit trail; you always know what Loop did |
+| **Quick Actions (Dismiss, Snooze)** | 3 | One-click buttons to dismiss or snooze obligations | Reduces friction; feedback tunes the threshold |
+| **Three-Valued Verifier** | 4 | Verifier returns: definitely merged (✓), definitely open (✗), or unknown (?) | Safety over eagerness; auto-close only on certainty |
+| **Auto-Close (Autonomous)** | 4 | When work is verified done, Loop closes the obligation with no user action | The signature moment; work → resolution, not UI → resolution |
+| **Verified Auto-Healed Feed** | 4–5 | Shows all closed obligations with timestamp, person, and verification badge | Proof of autonomy; every entry was auto-detected and auto-closed |
+| **Learn Loop (Feedback)** | 5 | Tracks confirms/dismisses/snoozes and tunes the confidence threshold | Adaptive; Loop gets smarter the more you use it |
+| **Zero-State Celebration** | 5 | "You're all caught up" + "Loop auto-closed N loops" | Psychological reward; system reinforces its own value |
+| **Audit Log** | 5 | Full history of detected obligations, actions taken, feedback given | Trust & compliance; you can always see what Loop did and why |
+
+---
+
+## 5.2 Technical deep dives for Q&A
+
+**On Nudges:**
+- The AI drafts the nudge using the **context** (which channel, who asked, what PR/artifact) and the **your voice** (it learns your tone from past messages if enabled).
+- You can edit every character; edits are logged and help the Learn loop understand your preferences.
+- Sending is **explicit and on-the-record**: no silent sends, no fire-and-forget.
+
+**On Assistant & Tool-Use:**
+- The assistant doesn't use templates; it **reasons agentic-ally** with every query.
+- If you ask "Who's been waiting the longest?", it doesn't just return a list — it sorts, explains, and can suggest next steps.
+- The **tool-use trace** is the source of truth for what the agent actually did; if the trace shows "No PRs found", you can trust that.
+
+**On Auto-Close:**
+- The **Verifier** is the gating mechanism; it's stateless and deterministic.
+- If a PR is in "unknown" state (API flaky, etc.), the loop stays open. Only definite merges trigger close.
+- Closure metadata is recorded: timestamp, PR link, detection method, etc.
+- **Audit trail**: every closure can be traced back to the verification event.
+
+---
+
 
 Beat 4 hits the **real GitHub MCP** live. Protect it:
 1. **Record it controlled, not live in front of judges.** Merge, capture the heal, re-shoot until crisp.

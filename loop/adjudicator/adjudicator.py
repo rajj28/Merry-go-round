@@ -56,13 +56,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from loop.adjudicator.pr_ref import extract_pr_ref
 from loop.graph.models import (
     ArtifactType,
     LoopState,
     Obligation,
+    ObligationKind,
     PersonId,
     UserId,
     clamp_confidence,
@@ -103,6 +104,10 @@ class SmartAdjudication:
       direction       whose court the ball is in (Req 3.2)
       confidence      certainty in [0.0, 1.0] (clamped on use, Req 3.3)
       subject_summary one-line summary of the loop for the UI
+      kind            "reply" for a classic owed response; "meeting" when the
+                      message proposes a meeting ("let's meet tomorrow at 4 PM")
+      due_at          ISO 8601 proposed meeting time extracted by the smart
+                      tier, or None when absent/unparseable
       owes_id/owed_id explicit party extraction (both-or-nothing). When the
                       client names both edge endpoints — e.g. from the author id
                       and an ``<@U…>`` mention — the Adjudicator uses them
@@ -117,6 +122,8 @@ class SmartAdjudication:
     direction: Direction
     confidence: float
     subject_summary: str = ""
+    kind: str = "reply"
+    due_at: Optional[str] = None
     owes_id: Optional[PersonId] = None
     owed_id: Optional[PersonId] = None
 
@@ -223,6 +230,39 @@ def _slack_ts_to_iso(ts: str) -> Optional[str]:
         return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
     except (ValueError, TypeError, OSError):
         return None
+
+
+def _judged_kind(judgement: SmartAdjudication) -> ObligationKind:
+    """Map the judgement's ``kind`` string onto the frozen enum, defaulting to REPLY.
+
+    Anything the smart tier returns outside the frozen vocabulary is treated as a
+    classic reply loop, so a hallucinated kind can never break the write path.
+    """
+    if str(judgement.kind).strip().lower() == ObligationKind.MEETING.value:
+        return ObligationKind.MEETING
+    return ObligationKind.REPLY
+
+
+def _judged_due_at(judgement: SmartAdjudication) -> Optional[str]:
+    """The judgement's ``due_at`` as normalized ISO 8601 UTC, or ``None``.
+
+    The smart tier extracts free text ("tomorrow at 4 PM") into ISO; this guard
+    re-parses it so only a real timestamp is ever persisted. A naive value is
+    assumed UTC, matching the coercion used across the store and surfaces.
+    """
+    raw = judgement.due_at
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 def _obligation_id_for(channel: str, ts: str) -> str:
@@ -339,6 +379,8 @@ class Adjudicator:
             source_msg_channel=candidate.channel_id,  # Req 1.6 source reference
             source_msg_ts=candidate.message_ts,
             subject_summary=judgement.subject_summary,
+            kind=_judged_kind(judgement),
+            due_at=_judged_due_at(judgement),
             artifact_type=artifact_type,
             artifact_ref=pr_ref,
         )
@@ -381,7 +423,43 @@ class Adjudicator:
         return other_id, user_id
 
 
-def build_smart_reasoning_client(settings: Any | None = None) -> LoopReasoningClient:
+def _build_default_tz_lookup(settings: Any) -> "Callable[[str], Optional[int]]":
+    """A lazy, cached ``author_id -> tz_offset seconds`` resolver via ``users.info``.
+
+    The slack_sdk import and the network call happen inside the returned callable
+    (matching this module's lazy-wiring discipline), results are cached per
+    process, and any failure — no token, SDK missing, API error — yields ``None``
+    so the caller falls back to treating the send time as UTC.
+    """
+    cache: dict[str, Optional[int]] = {}
+
+    def _lookup(author_id: str) -> Optional[int]:
+        if not author_id:
+            return None
+        if author_id in cache:
+            return cache[author_id]
+        offset: Optional[int] = None
+        try:
+            from slack_sdk import WebClient
+
+            token = getattr(settings, "slack_bot_token", "")
+            if token:
+                resp = WebClient(token=token).users_info(user=author_id)
+                raw = (resp.get("user") or {}).get("tz_offset")
+                if isinstance(raw, (int, float)):
+                    offset = int(raw)
+        except Exception:  # noqa: BLE001 — tz is best-effort; UTC is the fallback.
+            offset = None
+        cache[author_id] = offset
+        return offset
+
+    return _lookup
+
+
+def build_smart_reasoning_client(
+    settings: Any | None = None,
+    tz_lookup: "Optional[Callable[[str], Optional[int]]]" = None,
+) -> LoopReasoningClient:
     """Wire a real smart-tier ``LoopReasoningClient`` from config.
 
     Provider-agnostic: routes through :func:`loop.llm.chat` at the **smart tier**
@@ -392,6 +470,12 @@ def build_smart_reasoning_client(settings: Any | None = None) -> LoopReasoningCl
     module — and constructing the client — never touches the network or requires a
     provider SDK installed. The required credential for the active provider is
     validated at call time.
+
+    ``tz_lookup`` resolves an author id to their Slack ``tz_offset`` (seconds from
+    UTC) so a spoken time like "4 PM" is interpreted in the **author's** local
+    timezone, not UTC. When omitted, a lazy cached ``users.info`` resolver is
+    built from the settings' bot token (:func:`_build_default_tz_lookup`); a
+    ``None`` offset falls back to UTC.
 
     NOTE: the prompt/response parsing here is the minimal real-call wiring; the
     Watcher/Adjudicator logic and all tests exercise the Adjudicator through an
@@ -405,20 +489,40 @@ def build_smart_reasoning_client(settings: Any | None = None) -> LoopReasoningCl
     from loop.llm import require_provider_key
 
     require_provider_key(settings)
+    if tz_lookup is None:
+        tz_lookup = _build_default_tz_lookup(settings)
 
     def _client(
         candidate: CandidateMessage, *, user_id: UserId
     ) -> SmartAdjudication:
         import json
+        from datetime import timedelta
 
         from loop.llm import chat
 
+        sent_at = _slack_ts_to_iso(candidate.message_ts) or utc_now_iso()
+        # Anchor spoken times ("4 PM", "tomorrow") to the author's wall clock:
+        # shift the UTC send instant by their Slack tz_offset (best-effort).
+        offset_seconds = tz_lookup(candidate.author_id)
+        if offset_seconds is not None:
+            local_tz = timezone(timedelta(seconds=offset_seconds))
+            sent_local = datetime.fromisoformat(sent_at).astimezone(local_tz)
+            author_time_line = (
+                f"Author's local time when sent: {sent_local.isoformat()} "
+                f"(UTC offset {offset_seconds / 3600:+.1f}h)\n"
+            )
+        else:
+            author_time_line = (
+                "Author's local time when sent: unknown — assume UTC.\n"
+            )
         prompt = (
             "You analyze a Slack message for an 'open loop': one person owing "
             "another a concrete response, deliverable, or decision.\n"
             f"Tracked user id: {user_id}\n"
             f"Message author id: {candidate.author_id}\n"
             f"Channel: {candidate.channel_id}\n"
+            f"Message sent at (UTC): {sent_at}\n"
+            f"{author_time_line}"
             f"Message: {candidate.text}\n\n"
             "Identify the two parties of the loop as Slack user ids:\n"
             "- owes_id: who owes the next action (must deliver/reply)\n"
@@ -432,9 +536,20 @@ def build_smart_reasoning_client(settings: Any | None = None) -> LoopReasoningCl
             "subject_summary: a short imperative description of the deliverable "
             "itself (e.g. 'Send load-test results by EOD') — never refer to "
             "'the author', 'the user', or 'the mentioned user'.\n\n"
+            "kind: 'meeting' when the message proposes a meeting/call/sync "
+            "('let's meet tomorrow at 4 PM', 'can we hop on a call Friday?'); "
+            "otherwise 'reply'. A meeting proposal IS an open loop — it stays "
+            "open until the other party confirms.\n"
+            "due_at: for a meeting, the proposed time as an ISO 8601 UTC "
+            "timestamp. Interpret spoken times ('4 PM', 'tomorrow') on the "
+            "author's local clock (see the author's local time above), then "
+            "convert the result to UTC (e.g. 'tomorrow at 4 PM' said at local "
+            "2026-07-09, offset +2.0h -> '2026-07-10T14:00:00+00:00'); null "
+            "when no concrete time is stated or kind is 'reply'.\n\n"
             "Respond ONLY with JSON: {\"is_loop\": bool, "
             "\"owes_id\": string|null, \"owed_id\": string|null, "
-            "\"confidence\": float 0..1, \"subject_summary\": string}."
+            "\"confidence\": float 0..1, \"subject_summary\": string, "
+            "\"kind\": \"reply\"|\"meeting\", \"due_at\": string|null}."
         )
         text = chat(
             [{"role": "user", "content": prompt}],
@@ -462,6 +577,8 @@ def build_smart_reasoning_client(settings: Any | None = None) -> LoopReasoningCl
             direction=direction,
             confidence=float(data.get("confidence", 0.0)),
             subject_summary=str(data.get("subject_summary", "")),
+            kind=str(data.get("kind", "reply")),
+            due_at=data.get("due_at") if isinstance(data.get("due_at"), str) else None,
             owes_id=owes,
             owed_id=owed,
         )

@@ -383,6 +383,14 @@ class Watcher:
         ):
             return CandidateOutcome.OUT_OF_SCOPE
 
+        # --- (0.5) drop bot chatter (the rts_contract carries is_author_bot for
+        # exactly this). Loop's own posts — meeting proposals, confirmations,
+        # nudge DMs — must never feed back into perception and spawn loops
+        # about themselves.
+        if candidate.is_author_bot:
+            self._session_refs.add(candidate.dedup_key)
+            return CandidateOutcome.DROPPED
+
         # --- (1) dedup by source message reference (Req 2.9) -----------------
         # Both the graph-backed refs (candidates that became Obligations) and
         # the session memory (already dropped / already forwarded) count.
@@ -489,8 +497,9 @@ def build_rts_client(
 FAST_CLASSIFY_PROMPT = (
     "You are a high-recall first-pass filter for a personal Slack obligation agent.\n"
     "Decide whether the following message could plausibly be an OPEN LOOP — someone "
-    "waiting on a reply, blocked on someone, an unanswered question, or a promise to "
-    "follow up. Optimize for RECALL: if it is even plausibly an open loop, answer "
+    "waiting on a reply, blocked on someone, an unanswered question, a promise to "
+    "follow up, or a proposed meeting/call awaiting confirmation ('let's meet "
+    "tomorrow at 4 PM'). Optimize for RECALL: if it is even plausibly an open loop, answer "
     "YES. Only answer NO when it clearly cannot be an open loop.\n\n"
     "Answer with exactly one word: YES or NO.\n\n"
     "Message: {text}"

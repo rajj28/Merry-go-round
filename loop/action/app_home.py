@@ -36,7 +36,14 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Collection, Mapping, Optional, Union
 
-from loop.graph.models import ArtifactType, ClosureKind, LoopState, Obligation, PersonId
+from loop.graph.models import (
+    ArtifactType,
+    ClosureKind,
+    LoopState,
+    Obligation,
+    ObligationKind,
+    PersonId,
+)
 from loop.graph.store import ObligationFilter, ObligationGraph
 from loop.graph.surfacing import TimeLike, is_in_auto_healed_feed
 
@@ -128,6 +135,14 @@ ACTION_DISMISS = "app_home_dismiss"
 ACTION_ROW_OVERFLOW = "app_home_row_overflow"
 # The hero card's primary call-to-action — opens a DM summary of the blocked loops.
 ACTION_REVIEW_BLOCKED = "app_home_review_blocked"
+# Meeting-loop action: the button is a *link* button that opens the prefilled
+# Google Calendar event (no OAuth needed) AND fires this action_id, whose handler
+# posts a confirmation proposal into the source thread — a confirmed proposal
+# heals the loop autonomously.
+ACTION_SCHEDULE = "app_home_schedule"
+SCHEDULE_BUTTON_TEXT = "Schedule it"
+# Default meeting length used for the prefilled calendar event.
+MEETING_DEFAULT_MINUTES = 30
 # The hero quick-action: a dropdown of everyone blocked on you. Picking a person
 # opens the Nudge composer modal for that loop — a fast "nudge anyone" entry point
 # shown only when more than one person is waiting.
@@ -210,6 +225,53 @@ def slack_date(iso_or_ts: str) -> str:
     epoch = int(dt.timestamp())
     fallback = dt.date().isoformat()
     return f"<!date^{epoch}^{{date_short_pretty}} at {{time}}|{fallback}>"
+
+
+def is_meeting(obligation: Obligation) -> bool:
+    """True iff this loop is a proposed meeting (kind == meeting)."""
+    return obligation.kind == ObligationKind.MEETING
+
+
+def meeting_time_suffix(obligation: Obligation) -> str:
+    """The ``· proposed for <time>`` chip appended to a meeting row's meta line.
+
+    Rendered with :func:`slack_date` so the proposed instant localizes to each
+    viewer; plain text, per the dashboard's no-decorative-emoji discipline. Empty
+    for reply loops and for meetings without an extracted time, so every existing
+    row renders byte-identically.
+    """
+    if not is_meeting(obligation) or not obligation.due_at:
+        return ""
+    return f" · proposed for {slack_date(obligation.due_at)}"
+
+
+def meeting_calendar_url(obligation: Obligation) -> Optional[str]:
+    """A prefilled Google Calendar event-template URL for a meeting loop, or ``None``.
+
+    Uses the public ``calendar.google.com/calendar/render?action=TEMPLATE`` URL —
+    one click opens a ready-to-save event, no calendar OAuth or API integration.
+    The event spans :data:`MEETING_DEFAULT_MINUTES` from the proposed ``due_at``.
+    ``None`` when the loop is not a meeting or carries no parseable time, so the
+    caller simply renders no calendar link.
+    """
+    from datetime import timedelta
+    from urllib.parse import quote
+
+    if not is_meeting(obligation) or not obligation.due_at:
+        return None
+    try:
+        start = _parse_iso_utc(obligation.due_at)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    end = start + timedelta(minutes=MEETING_DEFAULT_MINUTES)
+    fmt = "%Y%m%dT%H%M%SZ"
+    dates = f"{start.strftime(fmt)}/{end.strftime(fmt)}"
+    title = quote(obligation.subject_summary or "Meeting", safe="")
+    details = quote("Proposed in Slack · scheduled via Loop", safe="")
+    return (
+        "https://calendar.google.com/calendar/render?action=TEMPLATE"
+        f"&text={title}&dates={dates}&details={details}"
+    )
 
 
 def _coerce_now(now: Optional[TimeLike]) -> datetime:
@@ -627,6 +689,26 @@ def nudge_action_label(obligation: Obligation) -> str:
     return "Reply" if obligation.loop_state == LoopState.BLOCKED_ON_YOU else "Nudge"
 
 
+def _schedule_button(obligation: Obligation) -> Optional[dict[str, Any]]:
+    """The meeting row's *Schedule it* button, or ``None`` on non-meeting rows.
+
+    A Slack **link button**: clicking it opens the prefilled Google Calendar event
+    in the browser *and* still delivers the :data:`ACTION_SCHEDULE` interaction, so
+    the handler can post the confirmation proposal into the source thread. Requires
+    a computable calendar URL (meeting kind + parseable ``due_at``).
+    """
+    url = meeting_calendar_url(obligation)
+    if url is None:
+        return None
+    return {
+        "type": "button",
+        "action_id": ACTION_SCHEDULE,
+        "text": {"type": "plain_text", "text": SCHEDULE_BUTTON_TEXT, "emoji": True},
+        "url": url,
+        "value": obligation.obligation_id,
+    }
+
+
 def _row_action_buttons(obligation: Obligation) -> dict[str, Any]:
     """The per-row actions block: one visible send button + a ⋮ overflow menu.
 
@@ -639,17 +721,23 @@ def _row_action_buttons(obligation: Obligation) -> dict[str, Any]:
     handlers live in :mod:`loop.app`.
     """
     oid = obligation.obligation_id
+    elements: list[dict[str, Any]] = [
+        {
+            "type": "button",
+            "action_id": ACTION_NUDGE,
+            "text": {"type": "plain_text", "text": nudge_action_label(obligation), "emoji": True},
+            "style": "primary",
+            "value": oid,
+        }
+    ]
+    schedule = _schedule_button(obligation)
+    if schedule is not None:
+        elements.append(schedule)
     return {
         "type": "actions",
         "block_id": f"row_actions::{oid}",
         "elements": [
-            {
-                "type": "button",
-                "action_id": ACTION_NUDGE,
-                "text": {"type": "plain_text", "text": nudge_action_label(obligation), "emoji": True},
-                "style": "primary",
-                "value": oid,
-            },
+            *elements,
             {
                 "type": "overflow",
                 "action_id": ACTION_ROW_OVERFLOW,
@@ -729,6 +817,7 @@ def _blocked_row_text(obligation: Obligation, chip: AgingChip) -> str:
     return (
         f"*{obligation.subject_summary}*\n"
         f"<@{obligation.owed_person_id}> · {_row_age_label(chip)}"
+        f"{meeting_time_suffix(obligation)}"
         f"{_channel_suffix(obligation)}{_view_message_link(obligation)}"
     )
 
@@ -738,6 +827,7 @@ def _waiting_row_text(obligation: Obligation, chip: AgingChip) -> str:
     return (
         f"*{obligation.subject_summary}*\n"
         f"<@{obligation.owes_person_id}> · {_row_age_label(chip)}"
+        f"{meeting_time_suffix(obligation)}"
         f"{_channel_suffix(obligation)}{_view_message_link(obligation)}"
     )
 
@@ -917,11 +1007,14 @@ def _card_action_buttons(obligation: Obligation) -> list[dict[str, Any]]:
     **Reply** on your-court loops, see :func:`nudge_action_label`), **Snooze**, and
     **Dismiss** (danger, left-aligned by Slack). Delegate is omitted on the card
     surface; it remains available on the section layout and via the Assistant pane.
+    On a meeting loop the middle slot becomes **Schedule it** (the calendar link
+    button) — for a proposed meeting, scheduling outranks snoozing.
     """
     oid = obligation.obligation_id
+    middle = _schedule_button(obligation) or _card_button(ACTION_SNOOZE, "Snooze", oid)
     return [
         _card_button(ACTION_NUDGE, nudge_action_label(obligation), oid, style="primary"),
-        _card_button(ACTION_SNOOZE, "Snooze", oid),
+        middle,
         _card_button(ACTION_DISMISS, "Dismiss", oid, style="danger"),
     ]
 
@@ -993,11 +1086,11 @@ def _active_section_cards(
         if name:
             card_title = name
             card_body: Optional[str] = o.subject_summary
-            subtitle = f"{_row_age_label(chip)}{_channel_suffix(o)}"
+            subtitle = f"{_row_age_label(chip)}{meeting_time_suffix(o)}{_channel_suffix(o)}"
         else:
             card_title = o.subject_summary
             card_body = None
-            subtitle = f"<@{person}> · {_row_age_label(chip)}{_channel_suffix(o)}"
+            subtitle = f"<@{person}> · {_row_age_label(chip)}{meeting_time_suffix(o)}{_channel_suffix(o)}"
         blocks.append(
             _obligation_card(
                 card_title,
@@ -1824,6 +1917,12 @@ __all__ = [
     "ACTION_DISMISS",
     "ACTION_ROW_OVERFLOW",
     "ACTION_REVIEW_BLOCKED",
+    "ACTION_SCHEDULE",
+    "SCHEDULE_BUTTON_TEXT",
+    "MEETING_DEFAULT_MINUTES",
+    "is_meeting",
+    "meeting_time_suffix",
+    "meeting_calendar_url",
     "ACTION_QUICK_NUDGE",
     "ACTION_CYCLE_SEND",
     "ACTION_DEMO_RESET",
@@ -1890,12 +1989,16 @@ def _blocked_card(
     person = obligation.owed_person_id
     name = _display_name(person, names)
     if name:
-        title, body, subtitle = name, obligation.subject_summary, f"{_row_age_label(chip)}{_channel_suffix(obligation)}"
+        title, body, subtitle = (
+            name,
+            obligation.subject_summary,
+            f"{_row_age_label(chip)}{meeting_time_suffix(obligation)}{_channel_suffix(obligation)}",
+        )
     else:
         title, body, subtitle = (
             obligation.subject_summary,
             None,
-            f"<@{person}> · {_row_age_label(chip)}{_channel_suffix(obligation)}",
+            f"<@{person}> · {_row_age_label(chip)}{meeting_time_suffix(obligation)}{_channel_suffix(obligation)}",
         )
     return _obligation_card(title, subtitle, person, avatars, _card_action_buttons(obligation), body=body)
 
@@ -1965,7 +2068,7 @@ def _compact_waiting_row(
     person = obligation.owes_person_id
     name = _display_name(person, names)
     chip = aging_chip(obligation, now)
-    meta = f"{_row_age_label(chip)}{_channel_suffix(obligation)}"
+    meta = f"{_row_age_label(chip)}{meeting_time_suffix(obligation)}{_channel_suffix(obligation)}"
     if name:
         text = f"*{name}* — {obligation.subject_summary} · {meta}"
     else:

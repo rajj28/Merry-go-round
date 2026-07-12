@@ -184,7 +184,9 @@ class TestRichViewIntegration:
             if b.get("type") == "header"
             and b["text"]["text"] == HEALED_SECTION_TITLE
         )
-        assert blocks[header_idx + 1]["type"] == "data_table"
+        # A one-line descriptor context sits under the header, then the table.
+        assert blocks[header_idx + 1]["type"] == "context"
+        assert blocks[header_idx + 2]["type"] == "data_table"
         # Classic renderer untouched when rich is off.
         classic = build_app_home_view(graph, now=NOW, user_id=USER)
         assert "data_table" not in str(classic)
@@ -199,32 +201,17 @@ class TestRichViewIntegration:
         assert "data_visualization" in text
         assert "quickchart.io/chart" not in text  # no image sparkline in rich mode
 
-    def test_rich_map_rides_in_a_collapsible_container(self) -> None:
-        graph = _store()
-        url = "https://quickchart.io/graphviz?graph=digraph%7B%7D"
-        view = build_app_home_view(graph, now=NOW, user_id=USER, map_url=url, rich=True)
-        container = next(
-            b
-            for b in view["blocks"]
-            if b.get("type") == "container" and b["title"]["text"] == "The Map"
-        )
-        assert container["is_collapsible"] is True
-        assert len(container["child_blocks"]) <= 10
-        assert container["child_blocks"][0]["type"] == "image"
-
     def test_rich_disabled_degrades_each_type_independently(self) -> None:
         # A workspace that refuses charts + containers (but accepts data_table)
         # must still get the native table while the rest render classic.
         graph = _store()
         graph.upsert(_healed("h1", "U_B", "2025-01-07T12:00:00+00:00"))
         graph.upsert(_edge("b1", USER, "U_A", state=LoopState.BLOCKED_ON_YOU))
-        url = "https://quickchart.io/graphviz?graph=digraph%7B%7D"
         view = build_app_home_view(
             graph,
             now=NOW,
             user_id=USER,
             show_impact=True,
-            map_url=url,
             rich=True,
             rich_disabled=frozenset({"data_visualization", "container"}),
         )
@@ -232,10 +219,10 @@ class TestRichViewIntegration:
         assert "data_visualization" not in text
         assert "'container'" not in text
         assert "data_table" in text  # the supported type still upgrades
-        # Charts degrade to the classic image sparkline; the map to a bare image.
-        assert "quickchart.io/chart" in text
-        types = [b.get("type") for b in view["blocks"]]
-        assert "image" in types
+        # The impact chart simply drops (no image-sparkline fallback anymore);
+        # the impact numbers still show as text.
+        assert "quickchart.io/chart" not in text
+        assert "auto-healed" in text
 
     def test_rich_with_every_type_disabled_matches_classic(self) -> None:
         graph = _store()
@@ -263,7 +250,7 @@ class TestRichViewIntegration:
             and b["title"]["text"].startswith("Deadlock:")
         )
         child_types = [c["type"] for c in container["child_blocks"]]
-        assert child_types == ["image", "section", "context", "actions"]
+        assert child_types == ["section", "context", "actions"]
 
 
 # ---------------------------------------------------------------------------

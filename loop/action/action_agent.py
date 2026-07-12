@@ -68,6 +68,7 @@ from loop.graph.models import (
     UserId,
     utc_now_iso,
 )
+from loop.emoji_utils import strip_emoji
 from loop.graph.store import ObligationFilter, ObligationGraph, Result, is_ok
 from loop.verifier.types import VerificationResult, VerifyPurpose
 from loop.verifier.verifier import Verifier, is_auto_close_permitted
@@ -492,6 +493,9 @@ class ActionAgent:
                 error=str(exc),
             )
 
+        # Keep the product emoji-free: models slip emoji into drafts, so strip
+        # them before this text is shown *or* sent as the user.
+        text = strip_emoji(text)
         # Req 7.1: a drafted nudge is "no more than 1000 characters". Clip defensively
         # so the constraint holds whatever the model returned.
         clipped = text[:NUDGE_DRAFT_MAX_CHARS]
@@ -781,8 +785,8 @@ class ActionAgent:
         blocked_people = "person is" if blocked_on_you_count == 1 else "people are"
         return (
             "Your daily Loop digest:\n"
-            f"🔴 Blocked on you: {blocked_on_you_count} {blocked_people} waiting on you.\n"
-            f"⏳ Waiting on others: you're waiting on {waiting_on_other_count} loop"
+            f"Blocked on you: {blocked_on_you_count} {blocked_people} waiting on you.\n"
+            f"Waiting on others: you're waiting on {waiting_on_other_count} loop"
             f"{'' if waiting_on_other_count == 1 else 's'}."
         )
 

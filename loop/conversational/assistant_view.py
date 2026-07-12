@@ -103,6 +103,26 @@ def _avatar_accessory(
     return {"type": "image", "image_url": url, "alt_text": person_id}
 
 
+def _avatar_context(
+    text: str,
+    person_id: Optional[PersonId],
+    avatars: Optional[Mapping[str, str]],
+) -> Optional[dict[str, Any]]:
+    """A ``context`` block: a *small* (~20px) avatar image beside ``text``.
+
+    Context images render far smaller than a section image accessory (a large
+    thumbnail with no size control), so a chat row reads as one compact line.
+    Returns ``None`` when there is neither an avatar nor text.
+    """
+    elements: list[dict[str, Any]] = []
+    url = avatars.get(person_id) if (avatars and person_id) else None
+    if url:
+        elements.append({"type": "image", "image_url": url, "alt_text": person_id or "avatar"})
+    if text:
+        elements.append({"type": "mrkdwn", "text": text})
+    return {"type": "context", "elements": elements} if elements else None
+
+
 # ---------------------------------------------------------------------------
 # Tool_Use_Trace → clean "Loop's reasoning" context line (Req 12.5)
 # ---------------------------------------------------------------------------
@@ -196,11 +216,15 @@ def _obligation_section(
     now: Optional[TimeLike],
     user_id: Optional[PersonId],
     avatars: Optional[Mapping[str, str]] = None,
-) -> dict[str, Any]:
-    """One obligation rendered as an App-Home-styled ``section`` (subject + who + avatar)."""
-    text = f"*{obligation.subject_summary}*\n{_counterparty_line(obligation, now, user_id)}"
-    accessory = _avatar_accessory(_counterparty_person(obligation, user_id), avatars)
-    return _section(text, accessory=accessory)
+) -> list[dict[str, Any]]:
+    """One obligation as an App-Home-styled row: a subject ``section`` then a compact
+    ``context`` line carrying a *small* avatar + counterparty · age · channel."""
+    person = _counterparty_person(obligation, user_id)
+    blocks: list[dict[str, Any]] = [_section(f"*{obligation.subject_summary}*")]
+    meta = _avatar_context(_counterparty_line(obligation, now, user_id), person, avatars)
+    if meta is not None:
+        blocks.append(meta)
+    return blocks
 
 
 def _obligation_card_row(
@@ -272,6 +296,29 @@ def _aging_bar_chart(
     }
 
 
+def _query_summary_line(
+    obligations: list[Obligation], user_id: Optional[PersonId]
+) -> str:
+    """A concise, human lead line explaining the result (redesign) — how many and
+    which direction, then a prompt toward the actionable cards below."""
+    n = len(obligations)
+    people = "person" if n == 1 else "people"
+    blocking = sum(1 for o in obligations if user_id and o.owes_person_id == user_id)
+    waiting = sum(1 for o in obligations if user_id and o.owed_person_id == user_id)
+    if n and blocking == n:
+        verb = "is" if n == 1 else "are"
+        return (
+            f"*{n} {people} {verb} waiting on you.* "
+            "Nudge, snooze, or close any of these in a tap:"
+        )
+    if n and waiting == n:
+        return (
+            f"*You're waiting on {n} {people}.* "
+            "Here's what's still open — I can draft a nudge for any of them:"
+        )
+    return f"*{n} open loop{'s' if n != 1 else ''}.* Here's where things stand:"
+
+
 def _query_result_blocks(
     reply: AssistantReply,
     now: Optional[TimeLike],
@@ -281,21 +328,21 @@ def _query_result_blocks(
     style: str = "sections",
     chart: bool = False,
 ) -> list[dict[str, Any]]:
-    """Blocks for a QUERY_RESULT reply: a short header, then capped obligation rows.
+    """Blocks for a QUERY_RESULT reply: a concise explanation, then capped rows.
 
-    With ``style="cards"`` each obligation renders as a Block Kit ``card`` (avatar icon +
-    subject + counterparty + Nudge/Snooze/Dismiss); otherwise the section + accessory
-    row. When ``chart`` is set and there is at least one obligation, an aging
-    ``data_visualization`` bar chart is appended beneath the rows.
+    Leads with a one-line summary of *what* the result is (how many loops, waiting
+    on you vs you waiting) so the chat explains before it lists. With ``style="cards"``
+    each obligation renders as a Block Kit ``card`` (avatar icon + subject +
+    counterparty + Nudge/Snooze/Dismiss); otherwise the section + context row.
     """
-    blocks: list[dict[str, Any]] = [_section(f"*{QUERY_RESULT_HEADER}*")]
     obligations = list(reply.obligations)
+    blocks: list[dict[str, Any]] = [_section(_query_summary_line(obligations, user_id))]
     shown = obligations[:QUERY_ROW_CAP]
     for o in shown:
         if style == "cards":
             blocks.append(_obligation_card_row(o, now, user_id, avatars))
         else:
-            blocks.append(_obligation_section(o, now, user_id, avatars))
+            blocks.extend(_obligation_section(o, now, user_id, avatars))
     overflow = len(obligations) - len(shown)
     if overflow > 0:
         blocks.append(_context(f"_+{overflow} more not shown_"))
@@ -377,7 +424,7 @@ def _disambiguation_blocks(
         if style == "cards":
             blocks.append(_obligation_card_row(o, now, user_id, avatars))
         else:
-            blocks.append(_obligation_section(o, now, user_id, avatars))
+            blocks.extend(_obligation_section(o, now, user_id, avatars))
     return blocks
 
 

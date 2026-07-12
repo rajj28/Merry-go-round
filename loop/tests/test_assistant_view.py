@@ -115,7 +115,9 @@ def test_query_result_renders_trace_and_obligation_rows():
     assert "Searched workspace" in blocks[0]["elements"][0]["text"]
 
     text = _all_text(blocks)
-    assert QUERY_RESULT_HEADER in text
+    # The reply leads with a concise explanation (redesign), not a generic header.
+    assert QUERY_RESULT_HEADER not in text
+    assert "2 " in text  # the count is stated up front in the summary line
     # One App-Home-styled section per obligation: bold subject + counterparty mention.
     assert "*review the deck*" in text
     assert "*sign the budget*" in text
@@ -272,7 +274,7 @@ def test_trace_action_agent_label_is_action_appropriate():
 # --------------------------------------------------------------------------- #
 # Avatar image accessories on obligation rows (the premium lever)
 # --------------------------------------------------------------------------- #
-def test_query_result_row_has_avatar_accessory_when_supplied():
+def test_query_result_row_has_small_avatar_in_the_context_line_when_supplied():
     reply = AssistantReply(
         kind=ReplyKind.QUERY_RESULT,
         text="Found 1 loop.",
@@ -281,13 +283,19 @@ def test_query_result_row_has_avatar_accessory_when_supplied():
     )
     avatars = {OTHER: "https://avatars.example.com/other_72.png"}
     blocks = build_assistant_blocks(reply, now=NOW, user_id=USER, avatars=avatars)
-    row = next(b for b in blocks if b["type"] == "section" and "*ship" in b["text"]["text"])
-    assert row.get("accessory", {}).get("type") == "image"
-    assert row["accessory"]["image_url"] == "https://avatars.example.com/other_72.png"
-    assert row["accessory"]["alt_text"] == OTHER
+    i = next(
+        i for i, b in enumerate(blocks)
+        if b["type"] == "section" and "*ship" in b["text"]["text"]
+    )
+    assert "accessory" not in blocks[i]  # no large section accessory
+    ctx = blocks[i + 1]  # the meta context line carries the small avatar
+    assert ctx["type"] == "context"
+    img = next(e for e in ctx["elements"] if e.get("type") == "image")
+    assert img["image_url"] == "https://avatars.example.com/other_72.png"
+    assert img["alt_text"] == OTHER
 
 
-def test_query_result_row_has_no_accessory_when_avatar_absent():
+def test_query_result_row_has_no_avatar_when_absent():
     reply = AssistantReply(
         kind=ReplyKind.QUERY_RESULT,
         text="Found 1 loop.",
@@ -295,5 +303,11 @@ def test_query_result_row_has_no_accessory_when_avatar_absent():
         obligations=(_obligation("o1", owed=OTHER),),
     )
     blocks = build_assistant_blocks(reply, now=NOW, user_id=USER)  # no avatars
-    row = next(b for b in blocks if b["type"] == "section" and "*ship" in b["text"]["text"])
-    assert "accessory" not in row
+    i = next(
+        i for i, b in enumerate(blocks)
+        if b["type"] == "section" and "*ship" in b["text"]["text"]
+    )
+    assert "accessory" not in blocks[i]
+    ctx = blocks[i + 1]
+    assert ctx["type"] == "context"
+    assert all(e.get("type") != "image" for e in ctx["elements"])

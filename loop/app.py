@@ -56,6 +56,7 @@ from loop.action.app_home import (
     ACTION_QUICK_NUDGE,
     ACTION_REVIEW_BLOCKED,
     ACTION_ROW_OVERFLOW,
+    ACTION_SCHEDULE,
     ACTION_SNOOZE,
     aging_chip,
     auto_healed_rows,
@@ -65,6 +66,8 @@ from loop.action.app_home import (
     build_composer_status_modal,
     build_cycle_modal,
     build_nudge_modal,
+    meeting_calendar_url,
+    nudge_recipient_id,
     BLOCKED_SECTION_DESCRIPTOR,
     SPOTLIGHT_EYEBROW,
     NUDGE_MODAL_CALLBACK,
@@ -83,7 +86,14 @@ from loop.conversational.assistant_view import (
     people_in_reply,
 )
 from loop.conversational.conversational_agent import ConversationalAgent
-from loop.graph.models import LoopState, Obligation, ObligationId, UserId, utc_now_iso
+from loop.graph.models import (
+    ClosureKind,
+    LoopState,
+    Obligation,
+    ObligationId,
+    UserId,
+    utc_now_iso,
+)
 from loop.graph.sqlite_store import SqliteObligationGraph
 from loop.learn.feedback import LearnEngine
 from loop.pipeline import AdjudicationQueue
@@ -105,6 +115,9 @@ ACTION_DECLINE_SEND = "loop_decline_send"
 # the confirmation DM so a destructive-feeling action is never a dead end.
 ACTION_UNDO_DISMISS = "loop_undo_dismiss"
 ACTION_UNDO_SNOOZE = "loop_undo_snooze"
+# The in-channel meeting proposal's one-tap confirm. Anyone on the thread can
+# confirm; a confirmed meeting heals its loop autonomously (Auto-Healed feed).
+ACTION_MEETING_CONFIRM = "loop_meeting_confirm"
 
 
 def _parse_iso_utc(value: str) -> datetime:
@@ -1004,6 +1017,98 @@ class LoopApp:
             blocks=_confirmation_blocks("*Un-snoozed*", context=restored.subject_summary or None),
         )
 
+    # ==================================================================
+    # Meeting loops — Schedule it → in-thread confirm → autonomous heal
+    # ==================================================================
+    def handle_schedule_click(self, obligation_id: ObligationId, client: Any) -> HandlerResult:
+        """Kick off scheduling for a meeting loop (the *Schedule it* button).
+
+        The button itself is a link button that already opened the prefilled
+        Google Calendar event in the user's browser; this handler does the agentic
+        half: it posts a confirmation proposal into the loop's **source thread**
+        (bot message — proposing a time is safe, so no send-as-user gate) with a
+        one-tap Confirm. When the counterparty confirms, the loop heals
+        autonomously (:meth:`handle_meeting_confirm`).
+        """
+        obligation = self.graph.get(obligation_id)
+        if obligation is None:
+            return HandlerResult(text="That loop no longer exists.")
+        if not obligation.due_at:
+            return HandlerResult(text="No proposed time is attached to this meeting yet.")
+
+        counterparty = nudge_recipient_id(obligation)
+        when = slack_date(obligation.due_at)
+        proposal = (
+            f"<@{counterparty}> — proposing *{obligation.subject_summary}* "
+            f"on {when}. One tap to lock it in."
+        )
+        posted = False
+        if client is not None and obligation.source_msg_channel:
+            try:
+                client.chat_postMessage(
+                    channel=obligation.source_msg_channel,
+                    thread_ts=obligation.source_msg_ts or None,
+                    text=proposal,
+                    blocks=_meeting_proposal_blocks(obligation, proposal),
+                )
+                posted = True
+            except Exception:  # noqa: BLE001 — a failed post is reported, not raised.
+                logger.exception(
+                    "failed to post meeting proposal for %s", obligation_id
+                )
+        if not posted:
+            return HandlerResult(
+                text=(
+                    "Couldn't post the proposal to the source channel — "
+                    "the calendar event is still in your browser."
+                )
+            )
+        ctx = f"<@{counterparty}> · {when} · in <#{obligation.source_msg_channel}>"
+        return HandlerResult(
+            text=f"Proposal posted — the loop closes itself when <@{counterparty}> confirms.",
+            obligation=obligation,
+            blocks=_confirmation_blocks(
+                "*Meeting proposed*",
+                context=ctx + " · confirms heal this loop automatically",
+            ),
+        )
+
+    def handle_meeting_confirm(self, obligation_id: ObligationId) -> HandlerResult:
+        """Heal a meeting loop after the in-thread one-tap confirm.
+
+        The confirmation is the verified artifact-state for a meeting (the
+        counterparty said yes), so the closure is **autonomous**: the loop lands in
+        the Auto-Healed feed with the confirmed time as the closure reason.
+        """
+        from loop.graph.store import is_ok
+
+        obligation = self.graph.get(obligation_id)
+        if obligation is None:
+            return HandlerResult(text="That loop no longer exists.")
+        if obligation.loop_state == LoopState.HEALED:
+            return HandlerResult(text="This meeting is already confirmed.")
+        now = self._now()
+        when = slack_date(obligation.due_at) if obligation.due_at else "the proposed time"
+        healed = obligation.model_copy(
+            update={
+                "loop_state": LoopState.HEALED,
+                "closure_kind": ClosureKind.AUTONOMOUS,
+                "closure_reason": f"Meeting confirmed for {when}",
+                "closure_timestamp": now,
+                "last_touch_timestamp": now,
+            }
+        )
+        if not is_ok(self.graph.upsert(healed)):
+            return HandlerResult(text="Couldn't record the confirmation; please try again.")
+        return HandlerResult(
+            text=f"Meeting confirmed for {when} — Loop closed this loop for you.",
+            obligation=healed,
+            blocks=_confirmation_blocks(
+                "*Meeting confirmed*",
+                context=f"{healed.subject_summary} · {when} · closed automatically",
+            ),
+        )
+
     def handle_review_blocked(self, user_id: UserId) -> HandlerResult:
         """Summarize the loops currently blocked on the user as a DM body (Req 6.1).
 
@@ -1601,6 +1706,45 @@ class LoopApp:
             ack()
             self.open_review_modal(_user_of(body), _trigger_id(body), client)
 
+        @app.action(ACTION_SCHEDULE)
+        def _on_schedule(ack, body, client):  # noqa: ANN001
+            # The link button already opened the prefilled calendar event in the
+            # browser; this posts the in-thread confirmation proposal.
+            ack()
+            result = self.handle_schedule_click(_action_value(body), client)
+            _post_dm(client, _user_of(body), result.text, result.blocks)
+
+        @app.action("loop_meeting_calendar_link")
+        def _on_meeting_calendar_link(ack):  # noqa: ANN001
+            ack()  # pure link button — nothing to do beyond the ack
+
+        @app.action(ACTION_MEETING_CONFIRM)
+        def _on_meeting_confirm(ack, body, client):  # noqa: ANN001
+            ack()
+            result = self.handle_meeting_confirm(_action_value(body))
+            # Swap the proposal message for the outcome so the thread shows the
+            # confirmed state instead of a still-clickable button (best-effort).
+            container = (body or {}).get("container") or {}
+            channel = container.get("channel_id")
+            ts = container.get("message_ts")
+            if client is not None and channel and ts and result.obligation is not None:
+                try:
+                    client.chat_update(
+                        channel=channel,
+                        ts=ts,
+                        text=result.text,
+                        blocks=[
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": f"*{result.text}*"},
+                            }
+                        ],
+                    )
+                except Exception:  # noqa: BLE001 — the heal already persisted.
+                    logger.exception("failed to update the meeting proposal message")
+            _post_dm(client, self.user_id, result.text, result.blocks)
+            self._refresh_home(client)
+
         @app.action(ACTION_CONFIRM_SEND)
         def _on_confirm(ack, body, client):  # noqa: ANN001
             ack()
@@ -1871,6 +2015,40 @@ def _post_dm(client: Any, user: str, text: str, blocks: Any = None) -> None:
 def _post_reply(client: Any, user: str, result: "HandlerResult") -> None:
     """Post a :class:`HandlerResult` to ``user``, forwarding its blocks when present."""
     _post_dm(client, user, result.text, result.blocks)
+
+
+def _meeting_proposal_blocks(obligation: Obligation, proposal: str) -> list[dict]:
+    """The in-thread meeting proposal: the ask + one-tap Confirm (+ calendar link).
+
+    Posted as the bot into the loop's source thread by
+    :meth:`LoopApp.handle_schedule_click`. The Confirm button carries the
+    obligation id so :data:`ACTION_MEETING_CONFIRM` can heal the right loop; the
+    calendar link button lets the counterparty add the same prefilled event.
+    """
+    elements: list[dict] = [
+        {
+            "type": "button",
+            "style": "primary",
+            "action_id": ACTION_MEETING_CONFIRM,
+            "text": {"type": "plain_text", "text": "Confirm meeting", "emoji": True},
+            "value": obligation.obligation_id,
+        }
+    ]
+    url = meeting_calendar_url(obligation)
+    if url:
+        elements.append(
+            {
+                "type": "button",
+                "action_id": "loop_meeting_calendar_link",
+                "text": {"type": "plain_text", "text": "Add to Google Calendar", "emoji": True},
+                "url": url,
+                "value": obligation.obligation_id,
+            }
+        )
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": proposal}},
+        {"type": "actions", "block_id": f"meeting_confirm::{obligation.obligation_id}", "elements": elements},
+    ]
 
 
 def _undo_dm_blocks(text: str, action_id: str, oid: str, *, label: str = "Undo") -> list[dict]:
