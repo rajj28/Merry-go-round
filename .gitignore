@@ -11,6 +11,9 @@ loop/.env
 # Local demo/submission working docs — not part of the project.
 VIDEO_BRIEF*.md
 
+# Watchdog runtime log.
+loop_app.log
+
 # Claude internal session/memory files (not part of the app).
 *.jsonl
 memory/
